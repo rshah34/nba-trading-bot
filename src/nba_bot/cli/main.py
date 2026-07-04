@@ -79,6 +79,50 @@ def predict(
 
 
 @app.command()
+def backtest(
+    season: str = typer.Option("2025-26", help="Season to replay, e.g. 2025-26."),
+    limit: int = typer.Option(30, help="Number of games in the slice."),
+    model: str = typer.Option("claude-haiku-4-5", help="Claude model for predictions."),
+    season_slice: str = typer.Option("start", "--slice", help="Part of season: start|mid|end."),
+    run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
+):
+    """Replay a season's games through Analysis + Evaluation. Estimates cost first."""
+    import anthropic
+
+    from nba_bot.backtest import loader, runner
+    from nba_bot.config import settings
+
+    with SessionLocal() as session:
+        rprint(f"[cyan]Loading {season}...[/cyan]")
+        rprint("  ", loader.load_season(session, season))
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        games = runner._backtest_games(session, season, limit, season_slice)
+        est = runner.estimate_cost(session, games, model, client)
+        window = f"{games[0].game_date} → {games[-1].game_date}" if games else "—"
+        rprint(
+            f"[cyan]Estimate:[/cyan] {est['games']} games ([bold]{season_slice}[/bold] slice, {window}) "
+            f"× ~{est.get('input_tokens_each', 0)} input tokens → ~[bold]${est['est_usd']}[/bold] on {model}"
+        )
+        if not run:
+            rprint("[yellow]Dry run — re-run with --run to execute (spends credits).[/yellow]")
+            return
+
+        rprint(f"[cyan]Running {len(games)} predictions...[/cyan]")
+        rep = runner.predict_and_evaluate(
+            session, games, model, runner.model_version_for(season, model, season_slice), client=client
+        )
+        rprint("\n[green bold]=== Backtest report ===[/green bold]")
+        rprint(f"games: {rep['n']}  winner accuracy: {rep['winner_accuracy']}  "
+               f"Brier: {rep['mean_brier']}  log-loss: {rep['mean_log_loss']}")
+        rprint(f"actual home win rate: {rep['home_win_rate_actual']}  "
+               f"confident picks: {rep['accuracy_confident_picks']}")
+        rprint("[bold]calibration (predicted vs actual):[/bold]")
+        for b in rep["calibration"]:
+            rprint(f"  {b['bin']}  n={b['n']:>3}  predicted={b['avg_predicted']}  "
+                   f"actual={b['actual_win_rate']}")
+
+
+@app.command()
 def evaluate():
     """Score newly-resolved predictions (Brier, log-loss, CLV) and print the track record."""
     with SessionLocal() as session:

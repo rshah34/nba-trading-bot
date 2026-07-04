@@ -130,11 +130,13 @@ def _build_user_prompt(context: dict) -> str:
     )
 
 
-def _generate_prediction(client: anthropic.Anthropic, system: str, user: str) -> GamePrediction:
-    # Sonnet 5 runs adaptive thinking by default; those tokens count against
-    # max_tokens, so leave headroom above the small structured payload.
+def _generate_prediction(
+    client: anthropic.Anthropic, system: str, user: str, model: str
+) -> GamePrediction:
+    # Adaptive-thinking models count thinking tokens against max_tokens, so
+    # leave headroom above the small structured payload.
     response = client.messages.parse(
-        model=settings.analysis_model,
+        model=model,
         max_tokens=8192,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -152,10 +154,17 @@ def predict_game(
     as_of: datetime | None = None,
     model_version: str | None = None,
     client: anthropic.Anthropic | None = None,
+    model: str | None = None,
+    use_news: bool = True,
 ) -> Prediction:
-    """Generate, store, and return a prediction for one game as of a cutoff time."""
+    """Generate, store, and return a prediction for one game as of a cutoff time.
+
+    use_news=False skips RAG retrieval — used for historical backtests, where no
+    point-in-time news exists, so the Voyage call would be pure waste.
+    """
     as_of = as_of or datetime.now(timezone.utc)
-    model_version = model_version or settings.analysis_model
+    model = model or settings.analysis_model
+    model_version = model_version or model
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     game = session.get(Game, game_id)
@@ -169,13 +178,15 @@ def predict_game(
     home_inj = current_injuries(session, game.home_team_id, as_of)
     away_inj = current_injuries(session, game.away_team_id, as_of)
 
-    news_query = f"injury, lineup, and roster news for {home.full_name} and {away.full_name}"
-    news_hits = retrieval.retrieve_relevant_news(
-        session,
-        query=news_query,
-        team_ids=[game.home_team_id, game.away_team_id],
-        as_of=game.game_date,
-    )
+    news_hits = []
+    if use_news:
+        news_query = f"injury, lineup, and roster news for {home.full_name} and {away.full_name}"
+        news_hits = retrieval.retrieve_relevant_news(
+            session,
+            query=news_query,
+            team_ids=[game.home_team_id, game.away_team_id],
+            as_of=game.game_date,
+        )
     news_text = "\n".join(f"- {h.title}: {h.chunk_text}" for h in news_hits)
 
     context = {
@@ -193,7 +204,7 @@ def predict_game(
         "news": news_text,
     }
 
-    prediction = _generate_prediction(client, _SYSTEM, _build_user_prompt(context))
+    prediction = _generate_prediction(client, _SYSTEM, _build_user_prompt(context), model)
     market = market_line(session, game_id, as_of)
     edge = None
     if market.home_win_prob is not None:

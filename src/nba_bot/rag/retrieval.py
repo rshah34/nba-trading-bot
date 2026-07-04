@@ -38,6 +38,7 @@ def retrieve_relevant_news(
     """Return up to k news chunks closest to the query, for the given teams/window."""
     query_vec = embeddings.embed_query(query)
     since = as_of - timedelta(days=lookback_days)
+    until = as_of + timedelta(days=1)  # include game-day news, exclude anything later
     distance = NewsChunk.embedding.cosine_distance(query_vec)
 
     stmt = (
@@ -51,9 +52,9 @@ def retrieve_relevant_news(
         )
         .join(NewsArticle, NewsChunk.article_id == NewsArticle.id)
         .where(or_(*[NewsArticle.team_ids.any(tid) for tid in team_ids]))
-        .where(
-            (NewsArticle.published_at.is_(None)) | (NewsArticle.published_at >= since)
-        )
+        # Point-in-time window: only news known at prediction time. Articles
+        # without a published_at are excluded (we can't verify their timing).
+        .where(NewsArticle.published_at >= since, NewsArticle.published_at < until)
         .order_by(distance)
         .limit(k)
     )
