@@ -4,7 +4,7 @@ from pathlib import Path
 import typer
 from rich import print as rprint
 
-from nba_bot.agents import data_agent
+from nba_bot.agents import analysis_agent, data_agent
 from nba_bot.db.engine import SessionLocal, engine
 from nba_bot.rag import ingest as news_ingest
 from nba_bot.rag import retrieval
@@ -55,6 +55,27 @@ def ingest_news():
     with SessionLocal() as session:
         result = news_ingest.sync_news(session)
     rprint("[green]News ingestion complete:[/green]", result)
+
+
+@app.command()
+def predict(
+    game_date: str = typer.Option("", help="Date to predict (YYYY-MM-DD). Defaults to today."),
+):
+    """Run the Analysis Agent on all scheduled games for a date → win prob + edge."""
+    target = date.fromisoformat(game_date) if game_date else date.today()
+    with SessionLocal() as session:
+        preds = analysis_agent.run_predictions(session, target)
+    if not preds:
+        rprint(f"[yellow]No scheduled games found for {target}.[/yellow]")
+        return
+    for p in preds:
+        edge = (p.context_used or {}).get("edge_vs_market")
+        edge_str = f"edge {edge:+.1%}" if isinstance(edge, (int, float)) else "no market line"
+        rprint(
+            f"[bold]{p.game_id}[/bold]  home win [cyan]{float(p.predicted_home_win_prob):.1%}[/cyan] "
+            f"(margin {float(p.predicted_spread):+.1f})  {edge_str}"
+        )
+        rprint(f"       [dim]{p.reasoning}[/dim]")
 
 
 @app.command()

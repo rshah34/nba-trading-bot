@@ -1,0 +1,312 @@
+"""Analysis Agent: for a single game, assemble point-in-time context (recent form,
+injuries, and RAG-retrieved news — all filtered to an `as_of` cutoff), ask Claude
+for an independent win-probability estimate, then compare it to the market to
+compute edge.
+
+The model is deliberately BLIND to the betting line so its estimate is
+independent; the de-vigged market probability is computed separately and only
+used to score edge. Every prediction records its `as_of` time and a snapshot of
+exactly what context it saw (context_used), so backtests replay honestly.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timezone
+
+import anthropic
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
+from nba_bot.config import settings
+from nba_bot.db.models import Game, Injury, Odds, Prediction, Team, TeamGameStats
+from nba_bot.rag import retrieval
+
+# Injury statuses worth surfacing to the model (skip healthy/available noise).
+_RELEVANT_INJURY_STATUSES = {"out", "doubtful", "questionable", "day-to-day", "gtd"}
+
+
+# --------------------------------------------------------------------------- #
+# Pure market math (no DB, no network) — unit-tested directly.
+# --------------------------------------------------------------------------- #
+def american_to_implied_prob(odds: int) -> float:
+    """Convert American moneyline odds to an implied win probability (incl. vig)."""
+    if odds < 0:
+        return -odds / (-odds + 100)
+    return 100 / (odds + 100)
+
+
+def devig_two_way(p_home: float, p_away: float) -> tuple[float, float]:
+    """Normalize a two-way implied-probability pair to remove the bookmaker vig."""
+    total = p_home + p_away
+    if total <= 0:
+        return 0.5, 0.5
+    return p_home / total, p_away / total
+
+
+@dataclass
+class MarketLine:
+    home_win_prob: float | None  # de-vigged, consensus across books
+    home_margin: float | None  # positive = home favored by N points
+    n_books: int
+
+
+def market_line_from_odds(odds_rows: list[Odds]) -> MarketLine:
+    """Consensus market view from a set of odds snapshots (latest per book).
+
+    Averages de-vigged moneyline probabilities and the point spread across books.
+    Spread is expressed as home margin (positive = home favored), i.e. -spread_home.
+    """
+    latest_by_book: dict[str, Odds] = {}
+    for row in odds_rows:
+        cur = latest_by_book.get(row.sportsbook)
+        if cur is None or row.captured_at > cur.captured_at:
+            latest_by_book[row.sportsbook] = row
+
+    probs: list[float] = []
+    margins: list[float] = []
+    for row in latest_by_book.values():
+        if row.home_moneyline is not None and row.away_moneyline is not None:
+            p_home = american_to_implied_prob(row.home_moneyline)
+            p_away = american_to_implied_prob(row.away_moneyline)
+            probs.append(devig_two_way(p_home, p_away)[0])
+        if row.spread_home is not None:
+            margins.append(-float(row.spread_home))
+
+    return MarketLine(
+        home_win_prob=sum(probs) / len(probs) if probs else None,
+        home_margin=sum(margins) / len(margins) if margins else None,
+        n_books=len(latest_by_book),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Point-in-time context assembly (DB reads, filtered to as_of).
+# --------------------------------------------------------------------------- #
+@dataclass
+class TeamForm:
+    games: int
+    wins: int
+    losses: int
+    avg_margin: float | None  # average plus/minus over the window
+
+
+def recent_form(session: Session, team_id: int, as_of: date, n: int = 10) -> TeamForm:
+    """Win/loss and average margin over the team's last n completed games before as_of."""
+    rows = session.execute(
+        select(TeamGameStats.plus_minus)
+        .join(Game, TeamGameStats.game_id == Game.game_id)
+        .where(
+            TeamGameStats.team_id == team_id,
+            Game.status == "final",
+            Game.game_date < as_of,
+            TeamGameStats.plus_minus.is_not(None),
+        )
+        .order_by(Game.game_date.desc())
+        .limit(n)
+    ).scalars().all()
+
+    margins = [float(m) for m in rows]
+    wins = sum(1 for m in margins if m > 0)
+    return TeamForm(
+        games=len(margins),
+        wins=wins,
+        losses=len(margins) - wins,
+        avg_margin=round(sum(margins) / len(margins), 1) if margins else None,
+    )
+
+
+def current_injuries(session: Session, team_id: int, as_of: datetime) -> list[dict]:
+    """Latest known injury status per player for a team, as of the cutoff."""
+    rows = session.execute(
+        select(Injury)
+        .where(Injury.team_id == team_id, Injury.reported_at <= as_of)
+        .order_by(Injury.reported_at.desc())
+    ).scalars().all()
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for inj in rows:
+        if inj.player_name in seen:
+            continue
+        seen.add(inj.player_name)
+        if (inj.status or "").lower() in _RELEVANT_INJURY_STATUSES:
+            out.append({"player": inj.player_name, "status": inj.status, "reason": inj.reason})
+    return out
+
+
+def market_line(session: Session, game_id: str, as_of: datetime) -> MarketLine:
+    """Consensus market line for a game from odds captured at or before as_of."""
+    rows = session.execute(
+        select(Odds).where(Odds.game_id == game_id, Odds.captured_at <= as_of)
+    ).scalars().all()
+    return market_line_from_odds(list(rows))
+
+
+# --------------------------------------------------------------------------- #
+# LLM prediction (structured output).
+# --------------------------------------------------------------------------- #
+class GamePrediction(BaseModel):
+    home_win_probability: float = Field(description="Probability the home team wins, 0.0-1.0")
+    predicted_home_margin: float = Field(
+        description="Predicted home margin in points; positive = home wins by that many"
+    )
+    reasoning: str = Field(description="Concise rationale for the prediction")
+    key_factors: list[str] = Field(description="The 2-5 factors that most drove this prediction")
+
+
+_SYSTEM = (
+    "You are an expert NBA analyst producing calibrated pre-game predictions. "
+    "Estimate the home team's win probability and expected margin from the provided "
+    "team form, injuries, and news only. You are NOT given the betting line — give your "
+    "own independent estimate. Be well-calibrated: reserve probabilities above 0.75 or "
+    "below 0.25 for genuinely lopsided matchups. Weigh injuries to key players heavily."
+)
+
+
+def _build_user_prompt(context: dict) -> str:
+    return (
+        f"Predict tonight's NBA game.\n\n"
+        f"HOME: {context['home_team']}\n"
+        f"AWAY: {context['away_team']}\n"
+        f"Date: {context['game_date']}\n\n"
+        f"Rest — home: {context['home_rest_days']} days, away: {context['away_rest_days']} days "
+        f"(home back-to-back: {context['home_b2b']}, away back-to-back: {context['away_b2b']})\n\n"
+        f"HOME recent form: {context['home_form']}\n"
+        f"AWAY recent form: {context['away_form']}\n\n"
+        f"HOME injuries: {context['home_injuries'] or 'none reported'}\n"
+        f"AWAY injuries: {context['away_injuries'] or 'none reported'}\n\n"
+        f"Relevant recent news:\n{context['news'] or '(no recent news retrieved)'}\n"
+    )
+
+
+def _generate_prediction(client: anthropic.Anthropic, system: str, user: str) -> GamePrediction:
+    # Sonnet 5 runs adaptive thinking by default; those tokens count against
+    # max_tokens, so leave headroom above the small structured payload.
+    response = client.messages.parse(
+        model=settings.analysis_model,
+        max_tokens=8192,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+        output_format=GamePrediction,
+    )
+    return response.parsed_output
+
+
+# --------------------------------------------------------------------------- #
+# Orchestration.
+# --------------------------------------------------------------------------- #
+def predict_game(
+    session: Session,
+    game_id: str,
+    as_of: datetime | None = None,
+    model_version: str | None = None,
+    client: anthropic.Anthropic | None = None,
+) -> Prediction:
+    """Generate, store, and return a prediction for one game as of a cutoff time."""
+    as_of = as_of or datetime.now(timezone.utc)
+    model_version = model_version or settings.analysis_model
+    client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    game = session.get(Game, game_id)
+    if game is None:
+        raise ValueError(f"game {game_id} not found")
+    home = session.get(Team, game.home_team_id)
+    away = session.get(Team, game.away_team_id)
+
+    home_form = recent_form(session, game.home_team_id, game.game_date)
+    away_form = recent_form(session, game.away_team_id, game.game_date)
+    home_inj = current_injuries(session, game.home_team_id, as_of)
+    away_inj = current_injuries(session, game.away_team_id, as_of)
+
+    news_query = f"injury, lineup, and roster news for {home.full_name} and {away.full_name}"
+    news_hits = retrieval.retrieve_relevant_news(
+        session,
+        query=news_query,
+        team_ids=[game.home_team_id, game.away_team_id],
+        as_of=game.game_date,
+    )
+    news_text = "\n".join(f"- {h.title}: {h.chunk_text}" for h in news_hits)
+
+    context = {
+        "home_team": home.full_name,
+        "away_team": away.full_name,
+        "game_date": str(game.game_date),
+        "home_rest_days": game.home_rest_days,
+        "away_rest_days": game.away_rest_days,
+        "home_b2b": game.is_back_to_back_home,
+        "away_b2b": game.is_back_to_back_away,
+        "home_form": asdict(home_form),
+        "away_form": asdict(away_form),
+        "home_injuries": home_inj,
+        "away_injuries": away_inj,
+        "news": news_text,
+    }
+
+    prediction = _generate_prediction(client, _SYSTEM, _build_user_prompt(context))
+    market = market_line(session, game_id, as_of)
+    edge = None
+    if market.home_win_prob is not None:
+        edge = round(prediction.home_win_probability - market.home_win_prob, 4)
+
+    context_snapshot = {
+        "as_of": as_of.isoformat(),
+        "home_injuries": home_inj,
+        "away_injuries": away_inj,
+        "news_urls": [h.url for h in news_hits],
+        "home_form": asdict(home_form),
+        "away_form": asdict(away_form),
+        "market": {"home_win_prob": market.home_win_prob, "home_margin": market.home_margin,
+                   "n_books": market.n_books},
+        "edge_vs_market": edge,
+        "key_factors": prediction.key_factors,
+    }
+
+    stmt = (
+        pg_insert(Prediction)
+        .values(
+            game_id=game_id,
+            model_version=model_version,
+            as_of=as_of,
+            predicted_home_win_prob=prediction.home_win_probability,
+            predicted_spread=prediction.predicted_home_margin,
+            market_home_win_prob=market.home_win_prob,
+            market_spread=market.home_margin,
+            reasoning=prediction.reasoning,
+            context_used=context_snapshot,
+        )
+        .on_conflict_do_update(
+            constraint="predictions_game_model_asof_key",
+            set_={
+                "predicted_home_win_prob": prediction.home_win_probability,
+                "predicted_spread": prediction.predicted_home_margin,
+                "market_home_win_prob": market.home_win_prob,
+                "market_spread": market.home_margin,
+                "reasoning": prediction.reasoning,
+                "context_used": json.loads(json.dumps(context_snapshot)),
+            },
+        )
+        .returning(Prediction.id)
+    )
+    pred_id = session.execute(stmt).scalar_one()
+    session.commit()
+    return session.get(Prediction, pred_id)
+
+
+def run_predictions(
+    session: Session,
+    game_date: date,
+    as_of: datetime | None = None,
+    model_version: str | None = None,
+) -> list[Prediction]:
+    """Predict every scheduled game on a date."""
+    game_ids = session.execute(
+        select(Game.game_id).where(Game.game_date == game_date, Game.status == "scheduled")
+    ).scalars().all()
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return [predict_game(session, gid, as_of=as_of, model_version=model_version, client=client)
+            for gid in game_ids]

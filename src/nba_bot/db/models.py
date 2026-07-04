@@ -1,7 +1,19 @@
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -106,10 +118,15 @@ class NewsChunk(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
+    __table_args__ = (
+        UniqueConstraint("game_id", "model_version", "as_of", name="predictions_game_model_asof_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), nullable=False)
     model_version: Mapped[str] = mapped_column(String, nullable=False)
+    # The instant this prediction was made; all context is filtered to <= as_of.
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     predicted_home_win_prob: Mapped[float] = mapped_column(Numeric, nullable=False)
     predicted_spread: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     market_home_win_prob: Mapped[float | None] = mapped_column(Numeric, nullable=True)
