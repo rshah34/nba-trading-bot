@@ -10,9 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from nba_bot.config import settings
 from nba_bot.data import injuries as injuries_client
 from nba_bot.data import nba_stats
-from nba_bot.db.models import Game, Injury, Team, TeamGameStats
+from nba_bot.data import odds_api
+from nba_bot.data.team_lookup import resolve_team_id
+from nba_bot.db.models import Game, Injury, Odds, Team, TeamGameStats
 
 
 def sync_teams(session: Session) -> int:
@@ -147,6 +150,89 @@ def backfill_box_scores(session: Session, lookback_days: int = 3) -> int:
             count += 1
         session.commit()
     return count
+
+
+def _build_game_index(session: Session) -> dict[tuple[date, int, int], str]:
+    """Map (game_date, home_team_id, away_team_id) -> game_id for odds matching."""
+    games = session.execute(select(Game.game_id, Game.game_date, Game.home_team_id, Game.away_team_id))
+    return {(g.game_date, g.home_team_id, g.away_team_id): g.game_id for g in games}
+
+
+def _match_game_id(index, game_date: date, home_id: int, away_id: int) -> str | None:
+    """Look up a game_id, tolerating a ±1 day skew between our stored game_date
+    and the odds commence date (UTC vs the game's local calendar date)."""
+    for delta in (0, 1, -1):
+        gid = index.get((game_date + timedelta(days=delta), home_id, away_id))
+        if gid:
+            return gid
+    return None
+
+
+def sync_odds(session: Session, markets: tuple[str, ...] = odds_api.DEFAULT_MARKETS) -> dict:
+    """Capture current NBA odds for all books and attach them to our games.
+
+    Each call inserts a fresh snapshot row per (game, sportsbook); repeated runs
+    over a day build the line-movement history that mark_closing_lines() reads.
+    """
+    events, quota = odds_api.fetch_nba_odds(settings.odds_api_key, markets)
+    index = _build_game_index(session)
+
+    inserted, unmatched = 0, 0
+    for raw in events:
+        ev = odds_api.parse_event(raw)
+        home_id = resolve_team_id(ev.home_team)
+        away_id = resolve_team_id(ev.away_team)
+        if home_id is None or away_id is None:
+            unmatched += 1
+            continue
+        game_id = _match_game_id(index, ev.commence_time.date(), home_id, away_id)
+        if game_id is None:
+            unmatched += 1
+            continue
+        for book in ev.books:
+            session.add(
+                Odds(
+                    game_id=game_id,
+                    sportsbook=book.sportsbook,
+                    home_moneyline=book.home_moneyline,
+                    away_moneyline=book.away_moneyline,
+                    spread_home=book.spread_home,
+                    spread_home_price=book.spread_home_price,
+                    spread_away_price=book.spread_away_price,
+                    total_points=book.total_points,
+                    over_price=book.over_price,
+                    under_price=book.under_price,
+                )
+            )
+            inserted += 1
+    session.commit()
+    return {"events": len(events), "odds_rows": inserted, "unmatched_events": unmatched, "quota": quota}
+
+
+def mark_closing_lines(session: Session) -> int:
+    """Flag the latest pre-tipoff snapshot per (game, sportsbook) as the closing line.
+
+    Runs over games that have already started (tipoff in the past); the most
+    recently captured row for each book is the closing line, the rest are not.
+    """
+    started = session.execute(
+        select(Game.game_id).where(Game.status == "final")
+    ).scalars().all()
+
+    marked = 0
+    for game_id in started:
+        rows = session.execute(
+            select(Odds).where(Odds.game_id == game_id).order_by(Odds.captured_at.desc())
+        ).scalars().all()
+        seen_books: set[str] = set()
+        for row in rows:
+            is_close = row.sportsbook not in seen_books
+            row.is_closing_line = is_close
+            if is_close:
+                seen_books.add(row.sportsbook)
+                marked += 1
+    session.commit()
+    return marked
 
 
 def run_nightly(session: Session) -> dict:
