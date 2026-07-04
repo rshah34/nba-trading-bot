@@ -75,8 +75,9 @@ def estimate_cost(session: Session, games: list[Game], model: str, client: anthr
             "est_usd": round(per_game * len(games), 3)}
 
 
-def model_version_for(season: str, model: str, season_slice: str = "start") -> str:
-    return f"backtest-{season}-{model}-{season_slice}"
+def model_version_for(season: str, model: str, season_slice: str = "start", tag: str = "") -> str:
+    base = f"backtest-{season}-{model}-{season_slice}"
+    return f"{base}-{tag}" if tag else base
 
 
 def predict_and_evaluate(

@@ -97,36 +97,56 @@ def market_line(session: Session, game_id: str, as_of: datetime) -> MarketLine:
 # LLM prediction (structured output).
 # --------------------------------------------------------------------------- #
 class GamePrediction(BaseModel):
+    # Fields are generated in order — reasoning FIRST so the model reasons before
+    # committing to a number (chain-of-thought; matters most for non-thinking models).
+    reasoning: str = Field(description="Step-by-step rationale, written BEFORE the probability")
+    key_factors: list[str] = Field(description="The 2-5 factors that most drove this prediction")
     home_win_probability: float = Field(description="Probability the home team wins, 0.0-1.0")
     predicted_home_margin: float = Field(
         description="Predicted home margin in points; positive = home wins by that many"
     )
-    reasoning: str = Field(description="Concise rationale for the prediction")
-    key_factors: list[str] = Field(description="The 2-5 factors that most drove this prediction")
 
 
 _SYSTEM = (
-    "You are an expert NBA analyst producing calibrated pre-game predictions. "
-    "Estimate the home team's win probability and expected margin from the provided "
-    "team form, injuries, and news only. You are NOT given the betting line — give your "
-    "own independent estimate. Be well-calibrated: reserve probabilities above 0.75 or "
-    "below 0.25 for genuinely lopsided matchups. Weigh injuries to key players heavily."
+    "You are an expert NBA analyst producing calibrated pre-game win probabilities. "
+    "Reason step by step from the team form, rest, injuries, and news provided, then "
+    "commit to a probability. Anchor on the league baseline — NBA home teams win about "
+    "58% of games — and move up or down from there for the margin edge, rest advantage, "
+    "and injuries. Be decisive: when one team is clearly stronger, commit to a confident "
+    "probability (0.65-0.80+); only stay near 0.50 when the matchup is genuinely even. "
+    "Weigh injuries to star players heavily. You are NOT given the betting line — this is "
+    "your own independent estimate."
 )
 
 
+def _form_line(team: str, f: dict) -> str:
+    if not f.get("games"):
+        return f"  {team}: no games played yet"
+    return f"  {team}: {f['wins']}-{f['losses']}, avg margin {f['avg_margin']:+.1f}"
+
+
 def _build_user_prompt(context: dict) -> str:
+    home, away = context["home_team"], context["away_team"]
+    hf, af = context["home_form"], context["away_form"]
+
+    edges = []
+    if hf.get("avg_margin") is not None and af.get("avg_margin") is not None:
+        d = hf["avg_margin"] - af["avg_margin"]
+        edges.append(f"margin edge: {home if d >= 0 else away} by {abs(d):.1f}")
+    hr, ar = context["home_rest_days"], context["away_rest_days"]
+    if hr is not None and ar is not None and hr != ar:
+        edges.append(f"rest edge: {home if hr > ar else away} by {abs(hr - ar)} day(s)")
+    edge_line = ("  → " + "; ".join(edges) + "\n") if edges else ""
+
     return (
-        f"Predict tonight's NBA game.\n\n"
-        f"HOME: {context['home_team']}\n"
-        f"AWAY: {context['away_team']}\n"
-        f"Date: {context['game_date']}\n\n"
-        f"Rest — home: {context['home_rest_days']} days, away: {context['away_rest_days']} days "
-        f"(home back-to-back: {context['home_b2b']}, away back-to-back: {context['away_b2b']})\n\n"
-        f"HOME recent form: {context['home_form']}\n"
-        f"AWAY recent form: {context['away_form']}\n\n"
-        f"HOME injuries: {context['home_injuries'] or 'none reported'}\n"
-        f"AWAY injuries: {context['away_injuries'] or 'none reported'}\n\n"
-        f"Relevant recent news:\n{context['news'] or '(no recent news retrieved)'}\n"
+        f"Predict this NBA game (home team vs away team).\n\n"
+        f"HOME: {home}\nAWAY: {away}\nDate: {context['game_date']}\n\n"
+        f"REST — home {context['home_rest_days']}d (back-to-back: {context['home_b2b']}), "
+        f"away {context['away_rest_days']}d (back-to-back: {context['away_b2b']})\n\n"
+        f"FORM (recent games):\n{_form_line(home, hf)}\n{_form_line(away, af)}\n{edge_line}\n"
+        f"INJURIES — {home}: {context['home_injuries'] or 'none reported'}\n"
+        f"INJURIES — {away}: {context['away_injuries'] or 'none reported'}\n\n"
+        f"NEWS:\n{context['news'] or '(none)'}\n"
     )
 
 

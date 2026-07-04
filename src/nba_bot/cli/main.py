@@ -84,6 +84,7 @@ def backtest(
     limit: int = typer.Option(30, help="Number of games in the slice."),
     model: str = typer.Option("claude-haiku-4-5", help="Claude model for predictions."),
     season_slice: str = typer.Option("start", "--slice", help="Part of season: start|mid|end."),
+    tag: str = typer.Option("", "--tag", help="Label this run (e.g. v1/v2) so reports don't mix."),
     run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
 ):
     """Replay a season's games through Analysis + Evaluation. Estimates cost first."""
@@ -109,7 +110,7 @@ def backtest(
 
         rprint(f"[cyan]Running {len(games)} predictions...[/cyan]")
         rep = runner.predict_and_evaluate(
-            session, games, model, runner.model_version_for(season, model, season_slice), client=client
+            session, games, model, runner.model_version_for(season, model, season_slice, tag), client=client
         )
         rprint("\n[green bold]=== Backtest report ===[/green bold]")
         rprint(f"games: {rep['n']}  winner accuracy: {rep['winner_accuracy']}  "
