@@ -4,7 +4,7 @@ from pathlib import Path
 import typer
 from rich import print as rprint
 
-from nba_bot.agents import analysis_agent, data_agent
+from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
 from nba_bot.db.engine import SessionLocal, engine
 from nba_bot.rag import ingest as news_ingest
 from nba_bot.rag import retrieval
@@ -76,6 +76,19 @@ def predict(
             f"(margin {float(p.predicted_spread):+.1f})  {edge_str}"
         )
         rprint(f"       [dim]{p.reasoning}[/dim]")
+
+
+@app.command()
+def evaluate():
+    """Score newly-resolved predictions (Brier, log-loss, CLV) and print the track record."""
+    with SessionLocal() as session:
+        result = evaluation_agent.run_evaluation(session)
+    rprint(f"[green]Evaluated {result['evaluated']} new prediction(s).[/green]")
+    rprint(
+        f"  track record over {result['n_evaluations']} eval(s): "
+        f"Brier={result['mean_brier']} log-loss={result['mean_log_loss']} "
+        f"winner-hit={result['winner_hit_rate']} CLV={result['mean_clv']}"
+    )
 
 
 @app.command()

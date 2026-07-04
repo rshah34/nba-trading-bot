@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nba_bot.agents.analysis_agent import (
+from nba_bot.markets import (
     american_to_implied_prob,
     devig_two_way,
     market_line_from_odds,
