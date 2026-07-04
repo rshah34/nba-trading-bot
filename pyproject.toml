@@ -1,0 +1,42 @@
+[project]
+name = "nba-trading-bot"
+version = "0.1.0"
+description = "Agent pipeline for NBA pre-game win probability prediction, backtesting, and closing-line-value tracking"
+requires-python = ">=3.11"
+dependencies = [
+    "nba-api>=1.4.1",
+    "anthropic>=0.39.0",
+    "psycopg[binary]>=3.2.0",
+    "pgvector>=0.3.0",
+    "sqlalchemy>=2.0.0",
+    "feedparser>=6.0.11",
+    "httpx>=0.27.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-dotenv>=1.0.1",
+    "typer>=0.12.5",
+    "rich>=13.9.0",
+    "tenacity>=9.0.0",
+    "apscheduler>=3.10.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+nba-bot = "nba_bot.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nba_bot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
