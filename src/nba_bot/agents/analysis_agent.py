@@ -17,12 +17,12 @@ from datetime import date, datetime, timezone
 
 import anthropic
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from nba_bot.config import settings
-from nba_bot.db.models import Game, Injury, Odds, Prediction, Team, TeamGameStats
+from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Prediction, Team, TeamGameStats
 from nba_bot.markets import MarketLine, market_line_from_odds
 from nba_bot.rag import retrieval
 
@@ -64,6 +64,48 @@ def recent_form(session: Session, team_id: int, as_of: date, n: int = 10) -> Tea
         losses=len(margins) - wins,
         avg_margin=round(sum(margins) / len(margins), 1) if margins else None,
     )
+
+
+def player_form(session: Session, team_id: int, as_of: date, n_games: int = 10,
+                top_k: int = 4) -> list[dict]:
+    """Top contributors for a team over its last n_games before as_of, by recent
+    production. 'Star' is computed here, not declared — a breakout or a decline
+    shows up in the trailing numbers. Point-in-time (games strictly before as_of).
+    """
+    recent_games = session.execute(
+        select(Game.game_id)
+        .join(PlayerGameStats, PlayerGameStats.game_id == Game.game_id)
+        .where(PlayerGameStats.team_id == team_id, Game.game_date < as_of)
+        .group_by(Game.game_id, Game.game_date)
+        .order_by(Game.game_date.desc())
+        .limit(n_games)
+    ).scalars().all()
+    if not recent_games:
+        return []
+
+    rows = session.execute(
+        select(
+            PlayerGameStats.player_name,
+            func.count().label("gp"),
+            func.avg(PlayerGameStats.minutes),
+            func.avg(PlayerGameStats.points),
+            func.avg(PlayerGameStats.rebounds),
+            func.avg(PlayerGameStats.assists),
+        )
+        .where(PlayerGameStats.team_id == team_id, PlayerGameStats.game_id.in_(recent_games))
+        .group_by(PlayerGameStats.player_name)
+    ).all()
+
+    players = []
+    for name, gp, mpg, ppg, rpg, apg in rows:
+        ppg, rpg, apg = float(ppg), float(rpg), float(apg)
+        players.append({
+            "name": name, "gp": gp, "mpg": round(float(mpg), 1),
+            "ppg": round(ppg, 1), "rpg": round(rpg, 1), "apg": round(apg, 1),
+            "impact": ppg + 0.5 * (rpg + apg),  # simple, transparent ranking
+        })
+    players.sort(key=lambda p: p["impact"], reverse=True)
+    return players[:top_k]
 
 
 def current_injuries(session: Session, team_id: int, as_of: datetime) -> list[dict]:
@@ -114,8 +156,9 @@ _SYSTEM = (
     "58% of games — and move up or down from there for the margin edge, rest advantage, "
     "and injuries. Be decisive: when one team is clearly stronger, commit to a confident "
     "probability (0.65-0.80+); only stay near 0.50 when the matchup is genuinely even. "
-    "Weigh injuries to star players heavily. You are NOT given the betting line — this is "
-    "your own independent estimate."
+    "Weigh each team's leading contributors and their recent production; if a key player "
+    "is out, adjust for the scoring/impact lost. You are NOT given the betting line — this "
+    "is your own independent estimate."
 )
 
 
@@ -123,6 +166,18 @@ def _form_line(team: str, f: dict) -> str:
     if not f.get("games"):
         return f"  {team}: no games played yet"
     return f"  {team}: {f['wins']}-{f['losses']}, avg margin {f['avg_margin']:+.1f}"
+
+
+def _players_line(players: list, injuries: list) -> str:
+    """Compact 'Name pts/reb/ast' list for top contributors, flagging any who are out."""
+    if not players:
+        return "n/a"
+    injured = {i["player"] for i in injuries}
+    return ", ".join(
+        f"{p['name']} {p['ppg']:.0f}/{p['rpg']:.0f}/{p['apg']:.0f}"
+        + (" (OUT)" if p["name"] in injured else "")
+        for p in players
+    )
 
 
 def _build_user_prompt(context: dict) -> str:
@@ -144,6 +199,9 @@ def _build_user_prompt(context: dict) -> str:
         f"REST — home {context['home_rest_days']}d (back-to-back: {context['home_b2b']}), "
         f"away {context['away_rest_days']}d (back-to-back: {context['away_b2b']})\n\n"
         f"FORM (recent games):\n{_form_line(home, hf)}\n{_form_line(away, af)}\n{edge_line}\n"
+        f"KEY PLAYERS (recent per-game pts/reb/ast):\n"
+        f"  {home}: {_players_line(context['home_players'], context['home_injuries'])}\n"
+        f"  {away}: {_players_line(context['away_players'], context['away_injuries'])}\n\n"
         f"INJURIES — {home}: {context['home_injuries'] or 'none reported'}\n"
         f"INJURIES — {away}: {context['away_injuries'] or 'none reported'}\n\n"
         f"NEWS:\n{context['news'] or '(none)'}\n"
@@ -197,6 +255,8 @@ def predict_game(
     away_form = recent_form(session, game.away_team_id, game.game_date)
     home_inj = current_injuries(session, game.home_team_id, as_of)
     away_inj = current_injuries(session, game.away_team_id, as_of)
+    home_players = player_form(session, game.home_team_id, game.game_date)
+    away_players = player_form(session, game.away_team_id, game.game_date)
 
     news_hits = []
     if use_news:
@@ -219,6 +279,8 @@ def predict_game(
         "away_b2b": game.is_back_to_back_away,
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
+        "home_players": home_players,
+        "away_players": away_players,
         "home_injuries": home_inj,
         "away_injuries": away_inj,
         "news": news_text,
@@ -237,6 +299,8 @@ def predict_game(
         "news_urls": [h.url for h in news_hits],
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
+        "home_players": [p["name"] for p in home_players],
+        "away_players": [p["name"] for p in away_players],
         "market": {"home_win_prob": market.home_win_prob, "home_margin": market.home_margin,
                    "n_books": market.n_books},
         "edge_vs_market": edge,

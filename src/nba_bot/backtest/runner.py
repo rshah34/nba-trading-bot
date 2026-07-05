@@ -63,6 +63,8 @@ def estimate_cost(session: Session, games: list[Game], model: str, client: anthr
         "home_b2b": home.is_back_to_back_home, "away_b2b": home.is_back_to_back_away,
         "home_form": {"games": 10, "wins": 6, "losses": 4, "avg_margin": 2.0},
         "away_form": {"games": 10, "wins": 5, "losses": 5, "avg_margin": -1.0},
+        "home_players": [{"name": "Player One", "ppg": 26.0, "rpg": 7.0, "apg": 6.0}] * 4,
+        "away_players": [{"name": "Player Two", "ppg": 24.0, "rpg": 8.0, "apg": 5.0}] * 4,
         "home_injuries": [], "away_injuries": [], "news": "",
     })
     in_tokens = client.messages.count_tokens(

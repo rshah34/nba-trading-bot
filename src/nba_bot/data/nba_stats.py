@@ -10,7 +10,12 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-from nba_api.stats.endpoints import boxscoretraditionalv2, leaguegamefinder, scoreboardv2
+from nba_api.stats.endpoints import (
+    boxscoretraditionalv2,
+    boxscoretraditionalv3,
+    leaguegamefinder,
+    scoreboardv2,
+)
 from nba_api.stats.static import teams as static_teams
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -94,3 +99,22 @@ def get_team_box_score(game_id: str) -> pd.DataFrame:
     """Per-team traditional box score stats for a single game."""
     box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
     return box.team_stats.get_data_frame()
+
+
+def parse_minutes(value) -> float | None:
+    """Parse a V3 'MM:SS' minutes string to float minutes; None/empty = DNP."""
+    if not value or ":" not in str(value):
+        return None
+    mm, ss = str(value).split(":")[:2]
+    return round(int(mm) + int(ss) / 60, 2)
+
+
+@_retry
+def get_player_box_score(game_id: str) -> pd.DataFrame:
+    """Per-player traditional box score for a game.
+
+    Uses BoxScoreTraditionalV3 — V2 stopped publishing data as of the 2025-26
+    season and returns an empty frame.
+    """
+    box = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id)
+    return box.player_stats.get_data_frame()

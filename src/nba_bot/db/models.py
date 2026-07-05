@@ -64,6 +64,29 @@ class TeamGameStats(Base):
     plus_minus: Mapped[float | None] = mapped_column(Numeric, nullable=True)
 
 
+class PlayerGameStats(Base):
+    __tablename__ = "player_game_stats"
+
+    game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), primary_key=True)
+    player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.team_id"), nullable=False)
+    minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rebounds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assists: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blocks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    turnovers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fgm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fga: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fg3m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fg3a: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ftm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fta: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plus_minus: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+
+
 class Injury(Base):
     __tablename__ = "injuries"
 
