@@ -1,9 +1,11 @@
+import logging
 from datetime import date
 from pathlib import Path
 
 import typer
 from rich import print as rprint
 
+from nba_bot import pipeline
 from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
 from nba_bot.db.engine import SessionLocal, engine
 from nba_bot.rag import ingest as news_ingest
@@ -76,6 +78,22 @@ def predict(
             f"(margin {float(p.predicted_spread):+.1f})  {edge_str}"
         )
         rprint(f"       [dim]{p.reasoning}[/dim]")
+
+
+@app.command()
+def daily_pregame():
+    """Pre-game phase: ingest data/injuries/results → capture odds → predict today's games."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    with SessionLocal() as session:
+        rprint(pipeline.run_pregame(session))
+
+
+@app.command()
+def daily_postgame():
+    """Post-game phase: ingest final results/box scores → mark closing lines → evaluate."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    with SessionLocal() as session:
+        rprint(pipeline.run_postgame(session))
 
 
 @app.command()

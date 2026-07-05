@@ -15,7 +15,7 @@ from nba_bot.data import injuries as injuries_client
 from nba_bot.data import nba_stats
 from nba_bot.data import odds_api
 from nba_bot.data.team_lookup import resolve_team_id
-from nba_bot.db.models import Game, Injury, Odds, Team, TeamGameStats
+from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Team, TeamGameStats
 
 
 def sync_teams(session: Session) -> int:
@@ -119,37 +119,81 @@ def sync_injuries(session: Session) -> int:
     return count
 
 
-def backfill_box_scores(session: Session, lookback_days: int = 3) -> int:
-    """Fetch team box scores for recently completed games that don't have stats yet."""
-    cutoff = date.today() - timedelta(days=lookback_days)
-    stmt = (
-        select(Game.game_id)
-        .outerjoin(TeamGameStats, Game.game_id == TeamGameStats.game_id)
-        .where(Game.status == "final", Game.game_date >= cutoff, TeamGameStats.game_id.is_(None))
-    )
-    game_ids = session.execute(stmt).scalars().all()
+def _to_int(v) -> int | None:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
+
+def store_player_box_score(session: Session, game_id: str) -> int:
+    """Fetch a game's player box score (V3) and upsert player_game_stats rows.
+
+    Uses BoxScoreTraditionalV3 — V2 stopped publishing as of 2025-26. Shared by
+    the live nightly ingest and the historical backfill.
+    """
+    df = nba_stats.get_player_box_score(game_id)
     count = 0
-    for game_id in game_ids:
-        df = nba_stats.get_team_box_score(game_id)
-        for _, row in df.iterrows():
-            session.add(
-                TeamGameStats(
-                    game_id=game_id,
-                    team_id=int(row["TEAM_ID"]),
-                    points=row["PTS"],
-                    fg_pct=row["FG_PCT"],
-                    fg3_pct=row["FG3_PCT"],
-                    ft_pct=row["FT_PCT"],
-                    rebounds=row["REB"],
-                    assists=row["AST"],
-                    turnovers=row["TO"],
-                    plus_minus=row["PLUS_MINUS"],
+    for _, r in df.iterrows():
+        minutes = nba_stats.parse_minutes(r["minutes"])
+        if minutes is None:  # DNP
+            continue
+        stmt = (
+            pg_insert(PlayerGameStats)
+            .values(
+                game_id=game_id,
+                player_id=int(r["personId"]),
+                player_name=f'{r["firstName"]} {r["familyName"]}'.strip(),
+                team_id=int(r["teamId"]),
+                minutes=minutes,
+                points=_to_int(r["points"]),
+                rebounds=_to_int(r["reboundsTotal"]),
+                assists=_to_int(r["assists"]),
+                steals=_to_int(r["steals"]),
+                blocks=_to_int(r["blocks"]),
+                turnovers=_to_int(r["turnovers"]),
+                fgm=_to_int(r["fieldGoalsMade"]),
+                fga=_to_int(r["fieldGoalsAttempted"]),
+                fg3m=_to_int(r["threePointersMade"]),
+                fg3a=_to_int(r["threePointersAttempted"]),
+                ftm=_to_int(r["freeThrowsMade"]),
+                fta=_to_int(r["freeThrowsAttempted"]),
+                plus_minus=float(r["plusMinusPoints"]) if r["plusMinusPoints"] is not None else None,
+            )
+            .on_conflict_do_nothing(index_elements=[PlayerGameStats.game_id, PlayerGameStats.player_id])
+        )
+        count += session.execute(stmt).rowcount or 0
+    session.commit()
+    return count
+
+
+def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
+    """For recently completed games, fill team margins (from final scores, no box
+    call) and per-player box scores (V3). Idempotent — skips games already stored.
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+    games = session.execute(
+        select(Game.game_id, Game.home_team_id, Game.away_team_id, Game.home_score, Game.away_score)
+        .where(Game.status == "final", Game.home_score.is_not(None), Game.game_date >= cutoff)
+    ).all()
+    have_players = set(session.execute(select(PlayerGameStats.game_id).distinct()).scalars().all())
+
+    team_rows, player_rows = 0, 0
+    for gid, home_id, away_id, hs, aws in games:
+        for team_id, pts, pm in ((home_id, hs, hs - aws), (away_id, aws, aws - hs)):
+            session.execute(
+                pg_insert(TeamGameStats)
+                .values(game_id=gid, team_id=team_id, points=pts, plus_minus=pm)
+                .on_conflict_do_update(
+                    index_elements=[TeamGameStats.game_id, TeamGameStats.team_id],
+                    set_={"points": pts, "plus_minus": pm},
                 )
             )
-            count += 1
-        session.commit()
-    return count
+            team_rows += 1
+        if gid not in have_players:
+            player_rows += store_player_box_score(session, gid)
+    session.commit()
+    return {"team_stat_rows": team_rows, "player_rows": player_rows}
 
 
 def _build_game_index(session: Session) -> dict[tuple[date, int, int], str]:
@@ -241,11 +285,11 @@ def run_nightly(session: Session) -> dict:
     games_today = sync_games_for_date(session, date.today())
     games_tomorrow = sync_games_for_date(session, date.today() + timedelta(days=1))
     injuries = sync_injuries(session)
-    box_scores = backfill_box_scores(session)
+    recent = backfill_recent_stats(session)
     return {
         "teams": teams,
         "games_today": games_today,
         "games_tomorrow": games_tomorrow,
         "injuries": injuries,
-        "box_score_rows": box_scores,
+        "recent_stats": recent,
     }

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from nba_bot.agents.data_agent import sync_teams
+from nba_bot.agents.data_agent import store_player_box_score, sync_teams
 from nba_bot.data import nba_stats
 from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
 
@@ -90,19 +90,11 @@ def load_season(session: Session, season: str) -> dict:
     return {"season": season, "games": games, "team_game_stat_rows": stats_rows}
 
 
-def _int(v) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def backfill_player_stats(session: Session, season: str, limit: int | None = None,
                           sleep: float = 0.5) -> dict:
-    """Fetch per-player box scores (V3) for a season's final games and store them.
-
-    Idempotent: skips games already ingested, so a failed run just resumes on re-run.
-    One nba_api call per game; `sleep` throttles to stay under nba.com rate limits.
+    """Fetch per-player box scores for a season's final games and store them
+    (via data_agent.store_player_box_score). Idempotent: skips games already
+    ingested, so a failed run resumes on re-run. `sleep` throttles nba.com calls.
     """
     final_ids = session.execute(
         select(Game.game_id)
@@ -117,36 +109,10 @@ def backfill_player_stats(session: Session, season: str, limit: int | None = Non
     games_done, rows, failed = 0, 0, 0
     for gid in todo:
         try:
-            df = nba_stats.get_player_box_score(gid)
+            rows += store_player_box_score(session, gid)
         except Exception:  # noqa: BLE001 — one flaky game shouldn't abort a long backfill
             failed += 1
             continue
-        for _, r in df.iterrows():
-            minutes = nba_stats.parse_minutes(r["minutes"])
-            if minutes is None:  # DNP — skip
-                continue
-            session.add(PlayerGameStats(
-                game_id=gid,
-                player_id=int(r["personId"]),
-                player_name=f'{r["firstName"]} {r["familyName"]}'.strip(),
-                team_id=int(r["teamId"]),
-                minutes=minutes,
-                points=_int(r["points"]),
-                rebounds=_int(r["reboundsTotal"]),
-                assists=_int(r["assists"]),
-                steals=_int(r["steals"]),
-                blocks=_int(r["blocks"]),
-                turnovers=_int(r["turnovers"]),
-                fgm=_int(r["fieldGoalsMade"]),
-                fga=_int(r["fieldGoalsAttempted"]),
-                fg3m=_int(r["threePointersMade"]),
-                fg3a=_int(r["threePointersAttempted"]),
-                ftm=_int(r["freeThrowsMade"]),
-                fta=_int(r["freeThrowsAttempted"]),
-                plus_minus=float(r["plusMinusPoints"]) if r["plusMinusPoints"] is not None else None,
-            ))
-            rows += 1
-        session.commit()
         games_done += 1
         if sleep:
             time.sleep(sleep)
