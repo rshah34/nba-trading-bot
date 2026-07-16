@@ -181,5 +181,17 @@ def search_news(
         rprint(f"       {h.chunk_text[:200]}")
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8000, help="Port to listen on."),
+    reload: bool = typer.Option(False, help="Auto-reload on code changes (dev only)."),
+):
+    """Serve the read-only JSON API (predictions, edges, backtest metrics)."""
+    import uvicorn
+
+    uvicorn.run("nba_bot.api.app:app", host=host, port=port, reload=reload)
+
+
 if __name__ == "__main__":
     app()
