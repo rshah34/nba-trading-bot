@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -17,17 +17,48 @@ from nba_bot.data import odds_api
 from nba_bot.data.team_lookup import resolve_team_id
 from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Team, TeamGameStats
 
+# Conference + division per team abbreviation. Static (realignment is rare) and not
+# provided by nba_api's static team list, so it's maintained here.
+_TEAM_ALIGNMENT: dict[str, tuple[str, str]] = {
+    # Eastern Conference
+    "BOS": ("East", "Atlantic"), "BKN": ("East", "Atlantic"), "NYK": ("East", "Atlantic"),
+    "PHI": ("East", "Atlantic"), "TOR": ("East", "Atlantic"),
+    "CHI": ("East", "Central"), "CLE": ("East", "Central"), "DET": ("East", "Central"),
+    "IND": ("East", "Central"), "MIL": ("East", "Central"),
+    "ATL": ("East", "Southeast"), "CHA": ("East", "Southeast"), "MIA": ("East", "Southeast"),
+    "ORL": ("East", "Southeast"), "WAS": ("East", "Southeast"),
+    # Western Conference
+    "DEN": ("West", "Northwest"), "MIN": ("West", "Northwest"), "OKC": ("West", "Northwest"),
+    "POR": ("West", "Northwest"), "UTA": ("West", "Northwest"),
+    "GSW": ("West", "Pacific"), "LAC": ("West", "Pacific"), "LAL": ("West", "Pacific"),
+    "PHX": ("West", "Pacific"), "SAC": ("West", "Pacific"),
+    "DAL": ("West", "Southwest"), "HOU": ("West", "Southwest"), "MEM": ("West", "Southwest"),
+    "NOP": ("West", "Southwest"), "SAS": ("West", "Southwest"),
+}
+
 
 def sync_teams(session: Session) -> int:
     rows = nba_stats.get_all_teams()
     count = 0
     for t in rows:
+        conference, division = _TEAM_ALIGNMENT.get(t["abbreviation"], (None, None))
         stmt = (
             pg_insert(Team)
-            .values(team_id=t["id"], abbreviation=t["abbreviation"], full_name=t["full_name"])
+            .values(
+                team_id=t["id"],
+                abbreviation=t["abbreviation"],
+                full_name=t["full_name"],
+                conference=conference,
+                division=division,
+            )
             .on_conflict_do_update(
                 index_elements=[Team.team_id],
-                set_={"abbreviation": t["abbreviation"], "full_name": t["full_name"]},
+                set_={
+                    "abbreviation": t["abbreviation"],
+                    "full_name": t["full_name"],
+                    "conference": conference,
+                    "division": division,
+                },
             )
         )
         session.execute(stmt)
@@ -167,6 +198,55 @@ def store_player_box_score(session: Session, game_id: str) -> int:
     return count
 
 
+def store_team_box_from_players(session: Session, game_id: str) -> int:
+    """Populate team_game_stats box columns by aggregating the game's already-stored
+    player rows — no extra API call. Percentages and assists are exact; rebounds and
+    turnovers can slightly undercount the box score's own "team rebound/turnover"
+    lines (deadball rebounds etc.). Upserts only the box columns, so points and
+    plus_minus (from final scores) are preserved. The Four Factors work (see ROADMAP)
+    will supersede this with an authoritative team box + opponent line.
+    """
+    rows = session.execute(
+        select(
+            PlayerGameStats.team_id,
+            func.sum(PlayerGameStats.rebounds),
+            func.sum(PlayerGameStats.assists),
+            func.sum(PlayerGameStats.turnovers),
+            func.sum(PlayerGameStats.fgm),
+            func.sum(PlayerGameStats.fga),
+            func.sum(PlayerGameStats.fg3m),
+            func.sum(PlayerGameStats.fg3a),
+            func.sum(PlayerGameStats.ftm),
+            func.sum(PlayerGameStats.fta),
+        )
+        .where(PlayerGameStats.game_id == game_id)
+        .group_by(PlayerGameStats.team_id)
+    ).all()
+
+    def pct(made, attempted) -> float | None:
+        return round(made / attempted, 3) if attempted else None
+
+    n = 0
+    for team_id, reb, ast, tov, fgm, fga, fg3m, fg3a, ftm, fta in rows:
+        box = {
+            "fg_pct": pct(fgm, fga),
+            "fg3_pct": pct(fg3m, fg3a),
+            "ft_pct": pct(ftm, fta),
+            "rebounds": reb,
+            "assists": ast,
+            "turnovers": tov,
+        }
+        session.execute(
+            pg_insert(TeamGameStats)
+            .values(game_id=game_id, team_id=team_id, **box)
+            .on_conflict_do_update(
+                index_elements=[TeamGameStats.game_id, TeamGameStats.team_id], set_=box
+            )
+        )
+        n += 1
+    return n
+
+
 def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
     """For recently completed games, fill team margins (from final scores, no box
     call) and per-player box scores (V3). Idempotent — skips games already stored.
@@ -192,6 +272,9 @@ def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
             team_rows += 1
         if gid not in have_players:
             player_rows += store_player_box_score(session, gid)
+        # Fill the team box columns (fg%, rebounds, assists, turnovers) from the
+        # player rows now that they're stored; points/plus_minus above are kept.
+        store_team_box_from_players(session, gid)
     session.commit()
     return {"team_stat_rows": team_rows, "player_rows": player_rows}
 
