@@ -4,14 +4,19 @@ RSS is free and keyless. Each article is tagged with the team ids it mentions
 by scanning its text for team nicknames, so retrieval can later filter news down
 to the two teams in a matchup.
 
-Nickname matching is a deliberate simplification: nicknames are unique across the
-30 teams and word-boundary anchored, but a few double as common words ("Heat",
-"Magic", "Thunder"), so occasional false-positive tags are possible.
+Matching is a deliberate simplification: articles are tagged by team nickname
+*and* city (word-boundary anchored). Cities catch mentions the nickname misses
+("Ja Morant to Portland" tags the Blazers), but a city shared by two teams
+("Los Angeles" → Lakers and Clippers) is ambiguous, so city matching is used only
+for cities unique to one team; the nickname disambiguates the rest. A few names
+double as common words ("Heat", "Magic", "Thunder", "Washington"), so occasional
+false-positive tags are possible.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -37,13 +42,20 @@ class FeedEntry:
 
 @lru_cache(maxsize=1)
 def _team_patterns() -> list[tuple[re.Pattern, int]]:
+    teams = static_teams.get_teams()
+    # A city shared by two teams (only "Los Angeles") can't identify one, so tag by
+    # city only when it maps to a single team.
+    city_counts = Counter(t["city"] for t in teams)
+
     patterns: list[tuple[re.Pattern, int]] = []
-    for t in static_teams.get_teams():
+    for t in teams:
         names = {t["nickname"]}
         # Multiword nickname (e.g. "Trail Blazers") should also match its common
         # short form ("Blazers").
         if " " in t["nickname"]:
             names.add(t["nickname"].split()[-1])
+        if city_counts[t["city"]] == 1:
+            names.add(t["city"])
         for name in names:
             patterns.append((re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE), t["id"]))
     return patterns
@@ -57,6 +69,53 @@ def tag_team_ids(text: str) -> list[int]:
 
 def _strip_html(value: str | None) -> str:
     return re.sub(r"<[^>]+>", "", value or "").strip()
+
+
+_TRAILING_ELLIPSIS = re.compile(r"\s*(?:\.\.\.|…)\s*$")
+# ESPN page <title> tags carry a " - ESPN" suffix; og:title does not.
+_TITLE_SITE_SUFFIX = re.compile(r"\s*[-|]\s*ESPN\s*$", re.IGNORECASE)
+
+
+def _clean_title(title: str | None) -> str:
+    """Drop a trailing ellipsis (ESPN truncates RSS titles) and surrounding space."""
+    return _TRAILING_ELLIPSIS.sub("", title or "").strip()
+
+
+def _meta_content(html: str, prop: str) -> str | None:
+    """Value of a <meta property=prop content=...> tag, tolerant of attribute order."""
+    tag = re.search(
+        rf'<meta[^>]+(?:property|name)=["\']{re.escape(prop)}["\'][^>]*>', html, re.IGNORECASE
+    )
+    if not tag:
+        return None
+    # Backreference the opening quote so an apostrophe inside a double-quoted value
+    # (content="Bucks' season") doesn't end the match early.
+    content = re.search(r'content=(["\'])(.*?)\1', tag.group(0), re.IGNORECASE | re.DOTALL)
+    return _strip_html(content.group(2)) if content else None
+
+
+@_retry
+def _fetch_article_html(url: str) -> str:
+    resp = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True, timeout=15)
+    resp.raise_for_status()
+    return resp.text
+
+
+def resolve_full_title(url: str, fallback: str) -> str:
+    """The RSS <title> is truncated with an ellipsis by ESPN, so fetch the article
+    page and use its full headline (og:title, then <title>). Falls back to the
+    cleaned RSS title if the page can't be fetched or exposes no usable title —
+    a page fetch failure must never drop the article.
+    """
+    try:
+        html = _fetch_article_html(url)
+    except Exception:
+        return _clean_title(fallback)
+    title = _meta_content(html, "og:title")
+    if not title:
+        m = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        title = _TITLE_SITE_SUFFIX.sub("", _strip_html(m.group(1))) if m else None
+    return _clean_title(title) or _clean_title(fallback)
 
 
 def _published_at(entry) -> datetime | None:

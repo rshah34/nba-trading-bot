@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -44,14 +45,25 @@ def chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[str]:
 
 def sync_news(session: Session, feed_urls: tuple[str, ...] = news_feeds.NBA_RSS_FEEDS) -> dict:
     """Fetch NBA news, store new articles + their embedded chunks. Idempotent per URL."""
-    entries = news_feeds.fetch_entries(feed_urls)
+    entries = [e for e in news_feeds.fetch_entries(feed_urls) if e.url]
+
+    # Skip URLs already ingested so we only fetch article pages (for the full
+    # title) for genuinely new entries — syncs run several times a day.
+    urls = [e.url for e in entries]
+    already = (
+        set(session.execute(select(NewsArticle.url).where(NewsArticle.url.in_(urls))).scalars())
+        if urls
+        else set()
+    )
 
     new_articles = 0
     pending: list[tuple[int, str]] = []  # (article_id, chunk_text)
     for entry in entries:
-        if not entry.url:
+        if entry.url in already:
             continue
-        body = f"{entry.title}. {entry.summary}".strip() if entry.summary else entry.title
+        # RSS titles are ellipsis-truncated; resolve the full headline from the page.
+        title = news_feeds.resolve_full_title(entry.url, entry.title)
+        body = f"{title}. {entry.summary}".strip() if entry.summary else title
         team_ids = news_feeds.tag_team_ids(body)
 
         stmt = (
@@ -59,7 +71,7 @@ def sync_news(session: Session, feed_urls: tuple[str, ...] = news_feeds.NBA_RSS_
             .values(
                 source=entry.source,
                 url=entry.url,
-                title=entry.title,
+                title=title,
                 published_at=entry.published_at,
                 team_ids=team_ids or None,
                 raw_text=entry.summary or None,
