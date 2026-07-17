@@ -103,6 +103,11 @@ def backtest(
     model: str = typer.Option("claude-haiku-4-5", help="Claude model for predictions."),
     season_slice: str = typer.Option("start", "--slice", help="Part of season: start|mid|end."),
     tag: str = typer.Option("", "--tag", help="Label this run (e.g. v1/v2) so reports don't mix."),
+    oracle_injuries: bool = typer.Option(
+        False, "--oracle-injuries",
+        help="Derive availability from each game's own box score to measure the on-off "
+             "feature's CEILING. Optimistic + mildly look-ahead — not a real track record.",
+    ),
     run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
 ):
     """Replay a season's games through Analysis + Evaluation. Estimates cost first."""
@@ -127,8 +132,12 @@ def backtest(
             return
 
         rprint(f"[cyan]Running {len(games)} predictions...[/cyan]")
+        if oracle_injuries:
+            rprint("[yellow]--oracle-injuries: availability taken from each game's own box "
+                   "score. This measures the CEILING, not a real track record.[/yellow]")
         rep = runner.predict_and_evaluate(
-            session, games, model, runner.model_version_for(season, model, season_slice, tag), client=client
+            session, games, model, runner.model_version_for(season, model, season_slice, tag),
+            client=client, oracle_injuries=oracle_injuries,
         )
         rprint("\n[green bold]=== Backtest report ===[/green bold]")
         rprint(f"games: {rep['n']}  winner accuracy: {rep['winner_accuracy']}  "

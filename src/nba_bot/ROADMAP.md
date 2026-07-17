@@ -22,12 +22,15 @@ about being ready to run a genuine forward track record when it tips off.
 
 ## 🎯 Before the season (priority)
 
-### 1. On-off injury-impact feature *(highest value)*
-The single biggest signal a backtest can't show. Quantify a player's *real* impact from
-**with/without splits** rather than reputation:
-- [ ] Team record / point differential / offensive & defensive efficiency **with vs. without** each key player (from `player_game_stats` × which games they played).
-- [ ] For a **long-term absence**, read the team's **recent form already-without-him** so the absence isn't double-counted (it's already priced into recent results).
-- [ ] Surface an estimated impact ("without X: net rating −6.2 over N games") into the Analysis Agent prompt, cross-referenced with the live injury report.
+### 1. On-off injury-impact feature *(highest value)* — ✅ **BUILT** (`features/on_off.py`)
+Quantifies a player's *real* impact from **with/without splits** rather than reputation:
+- [x] Team **net rating** (pts/100 poss) **with vs. without** each key player, from `player_game_stats` × who actually played (`minutes > 0` — a 0:00 row is stored, so row-existence alone would lie).
+- [x] **Regime labelling** solves the double-count: `newly_out` (form overstates the team — the actionable case), `long_term_out` (already priced into recent form — *don't* count twice), `returning` (form understates the team).
+- [x] **Roster span** guard: only games from a player's first appearance for that team, so a midseason acquisition isn't blamed for October.
+- [x] **Noise control**: min 3 games without / 5 games with, ≥15 mpg (deep-bench absences don't move a line), delta **shrunk** by sample size (`×n/(n+5)`), and avg opponent strength faced per split surfaced so the model can discount.
+- [x] **Name matching**: `normalize_name` folds accents (Dončić→doncic), suffixes (Jr./III), punctuation to join ESPN injury names to box-score names.
+- [x] Surfaced into the Analysis Agent prompt (ON-OFF section) + system prompt teaches the regime logic. Verified live: correctly ranks Markkanen (36 mpg, 32g/5g) first and filters a 1-game fringe player that naive `|delta|` sorting put on top.
+- [ ] **A/B it** — see the oracle-availability ceiling test under Modeling experiments.
 - *Why:* this is what makes the live pipeline beat the stats-only backtest ceiling.
 
 ### 2. Dress rehearsal
@@ -62,6 +65,13 @@ the clash (which plays to the LLM's strength).
   - [ ] **A/B via the backtest on a ~300-game slice** — PENDING: needs (1) `nba-bot backfill-team-box --season 2025-26` to populate historical raw counts, then (2) a tagged backtest run vs. the champion.
 - *Why / honest caveat:* like other team-trend features this **may test neutral offline** (stats-only, no market to beat), but it's the feature most likely to be *orthogonal* to margin, and it compounds with the live injury/news signals — a style hole plus the injured player who plugs it is exactly where live edge appears. Complements **opponent-adjusted strength** below (both want richer team stats).
 
+### Oracle-availability ceiling test (how to A/B on-off offline)
+No historical injury reports exist, so a backtest can't know pre-tip availability. But for a
+*completed* game we know who played, so `--oracle-injuries` derives absences from the game's own
+box score (`on_off.oracle_absences`).
+- [ ] Run a tagged A/B: `nba-bot backtest --season 2025-26 --limit 300 --slice mid --tag onoff-oracle --oracle-injuries --run` vs. the champion.
+- *Read it honestly:* this peeks at the game and assumes **perfect** pre-tip knowledge (reality has game-time decisions), so it measures the feature's **ceiling**, never a track record. Its value is cheap falsification — if on-off can't help *with* perfect availability info, it won't help live.
+
 - [ ] **Opponent-adjusted strength** — net rating / margin adjusted for schedule strength (raw margin ignores *who* you played). More principled than streak/momentum (which tested neutral).
 - [ ] **Calibration layer** — fit Platt/isotonic on backtest predictions to correct systematic over/under-confidence, apply to live output.
 - [ ] **Hybrid model** — blend the LLM estimate with a simple logistic-regression baseline (margin diff + rest + home) for a calibrated floor + LLM nuance.
@@ -73,7 +83,7 @@ the clash (which plays to the LLM's strength).
 ## 🏗️ Infrastructure & hardening
 
 - [ ] **CLV in backtest** — requires a historical odds dataset (free tier is live-only); optional, since CLV is best measured live.
-- [ ] **Injury name matching** — ESPN injury names vs. box-score names can differ; normalize for reliable on-off cross-reference.
+- [x] **Injury name matching** — done: `features/on_off.normalize_name` (accents, suffixes, punctuation). Unmatched names are skipped; worth logging misses once live data flows.
 - [ ] **Odds budget** — free tier is 500 req/month (~16/day); keep snapshots to a few per day.
 - [ ] **Multiple predictions per game** — early "preview" + "final" near tip (schema already supports via `as_of`); wire into the pipeline timing.
 - [ ] **Observability** — a `report`/dashboard command or artifact (calibration curve, accuracy over time, CLV distribution) for the season.

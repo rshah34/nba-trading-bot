@@ -94,14 +94,20 @@ def predict_and_evaluate(
     model: str,
     model_version: str,
     client: anthropic.Anthropic | None = None,
+    oracle_injuries: bool = False,
 ) -> dict:
-    """Predict each game point-in-time, score them, and return the report. Spends API credits."""
+    """Predict each game point-in-time, score them, and return the report. Spends API credits.
+
+    oracle_injuries=True measures the on-off feature's CEILING by deriving availability
+    from each game's own box score — optimistic and mildly look-ahead, never a real
+    track record. Tag such runs distinctly.
+    """
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
     for g in games:
         as_of = datetime.combine(g.game_date, time(18, 0), tzinfo=timezone.utc)
         analysis_agent.predict_game(
             session, g.game_id, as_of=as_of, model_version=model_version,
-            client=client, model=model, use_news=False,
+            client=client, model=model, use_news=False, oracle_injuries=oracle_injuries,
         )
     evaluation_agent.run_evaluation(session)
     return report.build_report(session, model_version)
