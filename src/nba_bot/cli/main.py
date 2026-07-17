@@ -159,6 +159,73 @@ def backtest(
 
 
 @app.command()
+def calibrate(
+    model_version: str = typer.Option(..., help="Model version whose resolved predictions to fit on."),
+    k: int = typer.Option(5, help="Cross-validation folds for the honest out-of-sample read."),
+    save: bool = typer.Option(False, "--save", help="Persist the fitted params so live betting applies them."),
+):
+    """Fit Platt calibration on a model's resolved predictions and report the
+    cross-validated (out-of-sample) Brier / log-loss improvement."""
+    from sqlalchemy import select
+
+    from nba_bot.agents import betting_agent
+    from nba_bot.db.models import Game, Prediction
+    from nba_bot.features import calibration
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Prediction.predicted_home_win_prob, Game.home_score, Game.away_score)
+            .join(Game, Prediction.game_id == Game.game_id)
+            .where(
+                Prediction.model_version == model_version,
+                Game.status == "final",
+                Game.home_score.is_not(None),
+            )
+        ).all()
+
+    if len(rows) < 2 * k:
+        rprint(f"[yellow]Only {len(rows)} resolved predictions for '{model_version}' — need more to fit.[/yellow]")
+        return
+
+    raw = [float(p) for p, _, _ in rows]
+    outcomes = [1 if hs > as_ else 0 for _, hs, as_ in rows]
+
+    cv = calibration.cross_val_metrics(raw, outcomes, k=k)
+    params = calibration.fit_platt(raw, outcomes)  # final params on all data
+
+    rprint(f"[bold]Calibration for[/bold] {model_version}  (n={cv['n']}, {k}-fold CV)")
+    rprint(f"  Brier    raw {cv['raw_brier']} → calibrated [cyan]{cv['cal_brier']}[/cyan]")
+    rprint(f"  log-loss raw {cv['raw_log_loss']} → calibrated [cyan]{cv['cal_log_loss']}[/cyan]")
+    better = cv["cal_brier"] < cv["raw_brier"] and cv["cal_log_loss"] <= cv["raw_log_loss"]
+    rprint(f"  fitted params: a={params.a:.3f} (a<1 shrinks toward 0.5), b={params.b:+.3f}")
+    rprint("[green]Calibration helps out-of-sample.[/green]" if better
+           else "[yellow]No out-of-sample gain — model is already ~calibrated on this data.[/yellow]")
+    if save:
+        with SessionLocal() as session:
+            betting_agent.save_calibration(session, model_version, params)
+        rprint(f"[green]Saved calibration for {model_version} — live betting will apply it.[/green]")
+
+
+@app.command()
+def bets(
+    model_version: str = typer.Option("", help="Filter to one model version (default: all)."),
+):
+    """Paper-trade track record from settled bets (CLV is the north-star metric)."""
+    from nba_bot.agents import betting_agent
+
+    with SessionLocal() as session:
+        rec = betting_agent.track_record(session, model_version or None)
+    if not rec["n_bets"]:
+        rprint("[yellow]No settled bets yet.[/yellow]")
+        return
+    rprint(f"[bold]Paper-trade record[/bold] ({rec['n_bets']} settled bets)")
+    rprint(f"  avg CLV: [cyan]{rec['avg_clv']:+.4f}[/cyan] prob pts  "
+           f"(beat the close {rec['clv_positive_rate']:.0%} of the time)  ← north star")
+    rprint(f"  win rate: {rec['win_rate']:.1%}   ROI: {rec['roi']:+.1%}   "
+           f"bankroll: {rec['final_bankroll']:.3f}× start")
+
+
+@app.command()
 def evaluate():
     """Score newly-resolved predictions (Brier, log-loss, CLV) and print the track record."""
     with SessionLocal() as session:

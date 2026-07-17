@@ -185,3 +185,38 @@ class PredictionEvaluation(Base):
     correctly_picked_winner: Mapped[bool] = mapped_column(Boolean, nullable=False)
     beat_spread: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Bet(Base):
+    __tablename__ = "bets"
+    __table_args__ = (
+        UniqueConstraint("game_id", "model_version", name="bets_game_model_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), nullable=False)
+    prediction_id: Mapped[int | None] = mapped_column(ForeignKey("predictions.id"), nullable=True)
+    model_version: Mapped[str] = mapped_column(String, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    side: Mapped[str] = mapped_column(String, nullable=False)  # 'home' | 'away'
+    model_prob: Mapped[float] = mapped_column(Numeric, nullable=False)
+    market_prob: Mapped[float] = mapped_column(Numeric, nullable=False)
+    edge: Mapped[float] = mapped_column(Numeric, nullable=False)
+    stake_fraction: Mapped[float] = mapped_column(Numeric, nullable=False)
+    decimal_odds: Mapped[float] = mapped_column(Numeric, nullable=False)
+    # Settlement (after the game resolves):
+    closing_decimal_odds: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    clv: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    won: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CalibrationParams(Base):
+    __tablename__ = "calibration_params"
+
+    model_version: Mapped[str] = mapped_column(String, primary_key=True)
+    a: Mapped[float] = mapped_column(Numeric, nullable=False)
+    b: Mapped[float] = mapped_column(Numeric, nullable=False)
+    n: Mapped[int] = mapped_column(Integer, nullable=False)
+    fitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

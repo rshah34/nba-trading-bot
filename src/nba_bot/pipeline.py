@@ -14,7 +14,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
+from nba_bot.agents import analysis_agent, betting_agent, data_agent, evaluation_agent
 
 log = logging.getLogger("nba_bot.pipeline")
 
@@ -39,6 +39,8 @@ def run_pregame(session: Session, on: date | None = None) -> dict:
             "predict",
             lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)],
         ),
+        # Size paper bets where the calibrated prob disagrees with the current market.
+        "bets": _step("record-bets", lambda: betting_agent.record_bets(session, on)),
     }
 
 
@@ -50,4 +52,6 @@ def run_postgame(session: Session) -> dict:
         "ingest": _step("ingest", lambda: data_agent.run_nightly(session)),
         "mark_closing": _step("mark-closing", lambda: data_agent.mark_closing_lines(session)),
         "evaluate": _step("evaluate", lambda: evaluation_agent.run_evaluation(session)),
+        # Settle paper bets: CLV vs. the closing line + P&L on the outcome.
+        "settle_bets": _step("settle-bets", lambda: betting_agent.settle_bets(session)),
     }

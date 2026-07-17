@@ -20,6 +20,17 @@ about being ready to run a genuine forward track record when it tips off.
 
 ---
 
+## 💰 Bet-decision + CLV layer — the actual money engine
+
+The pivot after four experiments proved stats can't out-predict the market (~0.243 Brier ceiling).
+Don't predict better — bet only the spots where the calibrated prob disagrees with a slow line.
+- [x] **Decision engine** (`betting.py`): `decide_bet`/`decide_bet_decimal` (de-vig → edge vs. calibrated prob → pick side over `min_edge`), fractional-Kelly sizing capped at `max_stake`, EV, `clv()`, `simulate_paper_trade`. Pure/tested. Verified on worked scenarios (finds edges, fades overpriced favorites).
+- [x] **Persisted + wired live** (migration 005 `bets` + `calibration_params`; `agents/betting_agent.py`): pregame `record_bets` applies calibration → consensus odds → sized bet (idempotent per game/model); postgame `settle_bets` scores CLV vs. the closing line + P&L. Both wired into `pipeline.py`. Verified end-to-end on synthetic data (bet placed, settled, CLV +0.041).
+- [x] **Apply calibration to live output** — `record_bets` applies stored Platt params before `decide_bet`. `nba-bot calibrate --save` persists them.
+- [x] **`nba-bot bets` report:** paper-trade track record — avg CLV (north star), CLV-positive rate, win rate, ROI, bankroll. Populates live during the season.
+- *Judge by CLV, not short-run P&L.* CLV is the durable edge signal; P&L is variance until n is large.
+- [ ] **Season activation:** once real odds flow, re-fit calibration on live Sonnet predictions (`calibrate --save`), tune `min_edge`/`kelly_multiplier`/`max_stake`, and watch the CLV curve.
+
 ## 🎯 Before the season (priority)
 
 ### 1. On-off injury-impact feature *(highest value)* — ✅ **BUILT** (`features/on_off.py`)
@@ -73,7 +84,7 @@ box score (`on_off.oracle_absences`).
 - *Read it honestly:* this peeks at the game and assumes **perfect** pre-tip knowledge (reality has game-time decisions), so it measures the feature's **ceiling**, never a track record. Its value is cheap falsification — if on-off can't help *with* perfect availability info, it won't help live.
 
 - [ ] **Opponent-adjusted strength** — net rating / margin adjusted for schedule strength (raw margin ignores *who* you played). More principled than streak/momentum (which tested neutral).
-- [ ] **Calibration layer** — fit Platt/isotonic on backtest predictions to correct systematic over/under-confidence, apply to live output.
+- [x] **Calibration layer** — DONE (`features/calibration.py`, `nba-bot calibrate`). Platt scaling, k-fold OOS eval. **Finding:** features only added overconfidence — after calibration all three 300g runs collapse to ~0.243 Brier (the stats-only ceiling ≈ coin-flip). Champion already ~calibrated; live Sonnet+features will need it. Params fit on Haiku → re-fit on live Sonnet data (model-transfer caveat).
 - [ ] **Hybrid model** — blend the LLM estimate with a simple logistic-regression baseline (margin diff + rest + home) for a calibrated floor + LLM nuance.
 - [ ] **Bigger-slice A/B** — n=100 can't resolve small effects; a decisive feature test needs ~300+ games (budget-aware).
 - [ ] **Model transfer check** — confirm v2/v4 gains hold on Sonnet (live model), not just Haiku (backtest model).
