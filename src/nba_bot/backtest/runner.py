@@ -6,6 +6,8 @@ cleanly separable from live predictions.
 
 from __future__ import annotations
 
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timezone
 
 import anthropic
@@ -15,7 +17,10 @@ from sqlalchemy.orm import Session
 from nba_bot.agents import analysis_agent, evaluation_agent
 from nba_bot.backtest import loader, report
 from nba_bot.config import settings
+from nba_bot.db.engine import SessionLocal
 from nba_bot.db.models import Game
+
+log = logging.getLogger("nba_bot.backtest")
 
 # Rough output-token budget per prediction (thinking + structured payload) for
 # the cost estimate; $/1M input,output.
@@ -95,22 +100,58 @@ def predict_and_evaluate(
     model_version: str,
     client: anthropic.Anthropic | None = None,
     oracle_injuries: bool = False,
+    use_matchup_features: bool = True,
+    concurrency: int = 8,
 ) -> dict:
     """Predict each game point-in-time, score them, and return the report. Spends API credits.
+
+    Predictions run concurrently (`concurrency` workers), each with its own DB session
+    since a Session isn't thread-safe; the Anthropic client is shared (it is). Per-game
+    failures are isolated so one bad game doesn't abort the run — the report's `failed`
+    count reflects them. Concurrency turns a ~1hr sequential 300-game run into minutes.
 
     oracle_injuries=True measures the on-off feature's CEILING by deriving availability
     from each game's own box score — optimistic and mildly look-ahead, never a real
     track record. Tag such runs distinctly.
+
+    use_matchup_features=False runs the champion prompt (no Four Factors / on-off) for a
+    clean A/B baseline on the same slice.
     """
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    for g in games:
-        as_of = datetime.combine(g.game_date, time(18, 0), tzinfo=timezone.utc)
-        analysis_agent.predict_game(
-            session, g.game_id, as_of=as_of, model_version=model_version,
-            client=client, model=model, use_news=False, oracle_injuries=oracle_injuries,
-        )
+    jobs = [(g.game_id, g.game_date) for g in games]  # detach from the outer session
+
+    def _predict(job: tuple[str, object]) -> None:
+        game_id, game_date = job
+        as_of = datetime.combine(game_date, time(18, 0), tzinfo=timezone.utc)
+        with SessionLocal() as s:  # per-thread session
+            analysis_agent.predict_game(
+                s, game_id, as_of=as_of, model_version=model_version,
+                client=client, model=model, use_news=False, oracle_injuries=oracle_injuries,
+                use_matchup_features=use_matchup_features,
+            )
+
+    failed = 0
+    if concurrency and concurrency > 1:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(_predict, j): j for j in jobs}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception:  # noqa: BLE001 — isolate one flaky game from the run
+                    log.exception("prediction failed for %s", futures[fut][0])
+                    failed += 1
+    else:
+        for j in jobs:
+            try:
+                _predict(j)
+            except Exception:  # noqa: BLE001
+                log.exception("prediction failed for %s", j[0])
+                failed += 1
+
     evaluation_agent.run_evaluation(session)
-    return report.build_report(session, model_version)
+    rep = report.build_report(session, model_version)
+    rep["failed"] = failed
+    return rep
 
 
 def run_backtest(

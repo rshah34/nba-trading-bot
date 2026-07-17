@@ -108,6 +108,11 @@ def backtest(
         help="Derive availability from each game's own box score to measure the on-off "
              "feature's CEILING. Optimistic + mildly look-ahead — not a real track record.",
     ),
+    baseline: bool = typer.Option(
+        False, "--baseline",
+        help="Champion prompt: drop the Four Factors / on-off sections for a clean A/B baseline.",
+    ),
+    concurrency: int = typer.Option(8, help="Parallel prediction workers (each its own DB session)."),
     run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
 ):
     """Replay a season's games through Analysis + Evaluation. Estimates cost first."""
@@ -137,9 +142,12 @@ def backtest(
                    "score. This measures the CEILING, not a real track record.[/yellow]")
         rep = runner.predict_and_evaluate(
             session, games, model, runner.model_version_for(season, model, season_slice, tag),
-            client=client, oracle_injuries=oracle_injuries,
+            client=client, oracle_injuries=oracle_injuries, use_matchup_features=not baseline,
+            concurrency=concurrency,
         )
         rprint("\n[green bold]=== Backtest report ===[/green bold]")
+        if rep.get("failed"):
+            rprint(f"[yellow]{rep['failed']} game(s) failed and were skipped.[/yellow]")
         rprint(f"games: {rep['n']}  winner accuracy: {rep['winner_accuracy']}  "
                f"Brier: {rep['mean_brier']}  log-loss: {rep['mean_log_loss']}")
         rprint(f"actual home win rate: {rep['home_win_rate_actual']}  "

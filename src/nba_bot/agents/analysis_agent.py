@@ -319,6 +319,7 @@ def predict_game(
     model: str | None = None,
     use_news: bool = True,
     oracle_injuries: bool = False,
+    use_matchup_features: bool = True,
 ) -> Prediction:
     """Generate, store, and return a prediction for one game as of a cutoff time.
 
@@ -329,6 +330,9 @@ def predict_game(
     of the (historically empty) injury table. BACKTEST ONLY — it peeks at the game
     and assumes perfect pre-tip knowledge, so it measures the on-off feature's
     ceiling, not a real track record. See features.on_off.oracle_absences.
+
+    use_matchup_features=False drops the Four Factors STYLE + ON-OFF sections,
+    reverting to the champion prompt — used for a clean A/B baseline on the same slice.
     """
     as_of = as_of or datetime.now(timezone.utc)
     model = model or settings.analysis_model
@@ -351,12 +355,16 @@ def predict_game(
         away_inj = current_injuries(session, game.away_team_id, as_of)
     home_players = player_form(session, game.home_team_id, game.game_date)
     away_players = player_form(session, game.away_team_id, game.game_date)
-    home_ff = team_four_factors(session, game.home_team_id, game.game_date)
-    away_ff = team_four_factors(session, game.away_team_id, game.game_date)
-    home_onoff = [asdict(i) for i in team_on_off(
-        session, game.home_team_id, game.season, game.game_date, home_inj, home_players)]
-    away_onoff = [asdict(i) for i in team_on_off(
-        session, game.away_team_id, game.season, game.game_date, away_inj, away_players)]
+    if use_matchup_features:
+        home_ff = asdict(team_four_factors(session, game.home_team_id, game.game_date))
+        away_ff = asdict(team_four_factors(session, game.away_team_id, game.game_date))
+        home_onoff = [asdict(i) for i in team_on_off(
+            session, game.home_team_id, game.season, game.game_date, home_inj, home_players)]
+        away_onoff = [asdict(i) for i in team_on_off(
+            session, game.away_team_id, game.season, game.game_date, away_inj, away_players)]
+    else:  # champion baseline — omit so the prompt sections degrade to empty
+        home_ff = away_ff = None
+        home_onoff = away_onoff = []
 
     news_hits = []
     if use_news:
@@ -379,8 +387,8 @@ def predict_game(
         "away_b2b": game.is_back_to_back_away,
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
-        "home_ff": asdict(home_ff),
-        "away_ff": asdict(away_ff),
+        "home_ff": home_ff,
+        "away_ff": away_ff,
         "home_onoff": home_onoff,
         "away_onoff": away_onoff,
         "home_players": home_players,
@@ -403,11 +411,12 @@ def predict_game(
         "news_urls": [h.url for h in news_hits],
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
-        "home_ff": asdict(home_ff),
-        "away_ff": asdict(away_ff),
+        "home_ff": home_ff,
+        "away_ff": away_ff,
         "home_onoff": home_onoff,
         "away_onoff": away_onoff,
         "oracle_injuries": oracle_injuries,
+        "matchup_features": use_matchup_features,
         "home_players": [p["name"] for p in home_players],
         "away_players": [p["name"] for p in away_players],
         "market": {"home_win_prob": market.home_win_prob, "home_margin": market.home_margin,
