@@ -53,3 +53,35 @@ export interface BacktestReport {
   accuracy_home_back_to_back: SplitAccuracy | null;
   calibration: CalibrationBin[];
 }
+
+export interface BetRow {
+  game_id: string;
+  game_date: string;
+  status: string;
+  home: TeamRef;
+  away: TeamRef;
+  home_score: number | null;
+  away_score: number | null;
+  model_version: string;
+  side: string; // 'home' | 'away'
+  edge: number;
+  model_prob: number;
+  market_prob: number;
+  decimal_odds: number;
+  stake_fraction: number;
+  settled: boolean;
+  won: boolean | null;
+  pnl: number | null;
+  clv: number | null;
+  closing_decimal_odds: number | null;
+}
+
+export interface BetsSummary {
+  n_bets: number;
+  n_pending: number;
+  win_rate: number | null;
+  roi: number | null;
+  final_bankroll: number;
+  avg_clv: number | null;
+  clv_positive_rate: number | null;
+}

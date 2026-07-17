@@ -14,10 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
+from nba_bot.agents import betting_agent
 from nba_bot.api import schemas
 from nba_bot.backtest.report import build_report
 from nba_bot.db.engine import SessionLocal
-from nba_bot.db.models import Game, Prediction, Team
+from nba_bot.db.models import Bet, Game, Prediction, Team
 
 app = FastAPI(
     title="NBA Trading Bot API",
@@ -146,6 +147,58 @@ def get_prediction(
         reasoning=pred.reasoning,
         context_used=pred.context_used,
     )
+
+
+def _bet_row(bet: Bet, game: Game, home: Team, away: Team) -> schemas.BetRow:
+    def f(v):
+        return float(v) if v is not None else None
+    return schemas.BetRow(
+        game_id=bet.game_id, game_date=game.game_date, status=game.status,
+        home=schemas.TeamRef(team_id=home.team_id, abbreviation=home.abbreviation, full_name=home.full_name),
+        away=schemas.TeamRef(team_id=away.team_id, abbreviation=away.abbreviation, full_name=away.full_name),
+        home_score=game.home_score, away_score=game.away_score,
+        model_version=bet.model_version, side=bet.side, edge=float(bet.edge),
+        model_prob=float(bet.model_prob), market_prob=float(bet.market_prob),
+        decimal_odds=float(bet.decimal_odds), stake_fraction=float(bet.stake_fraction),
+        settled=bet.settled_at is not None, won=bet.won, pnl=f(bet.pnl), clv=f(bet.clv),
+        closing_decimal_odds=f(bet.closing_decimal_odds),
+    )
+
+
+@app.get("/bets", response_model=list[schemas.BetRow])
+def list_bets(
+    session: Session = Depends(get_session),
+    model_version: str | None = Query(None, description="Filter to one model version."),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[schemas.BetRow]:
+    """Recorded paper bets (most recent first) — the bet log."""
+    home = aliased(Team)
+    away = aliased(Team)
+    stmt = (
+        select(Bet, Game, home, away)
+        .join(Game, Bet.game_id == Game.game_id)
+        .join(home, Game.home_team_id == home.team_id)
+        .join(away, Game.away_team_id == away.team_id)
+        .order_by(Bet.decided_at.desc())
+        .limit(limit)
+    )
+    if model_version:
+        stmt = stmt.where(Bet.model_version == model_version)
+    return [_bet_row(b, g, h, a) for b, g, h, a in session.execute(stmt).all()]
+
+
+@app.get("/bets/summary", response_model=schemas.BetsSummary)
+def bets_summary(
+    session: Session = Depends(get_session),
+    model_version: str | None = Query(None),
+) -> schemas.BetsSummary:
+    """Paper-trade track record (CLV, ROI, record) over settled bets, plus open count."""
+    rec = betting_agent.track_record(session, model_version)
+    pending_stmt = select(func.count()).select_from(Bet).where(Bet.settled_at.is_(None))
+    if model_version:
+        pending_stmt = pending_stmt.where(Bet.model_version == model_version)
+    n_pending = session.execute(pending_stmt).scalar_one()
+    return schemas.BetsSummary(**rec, n_pending=n_pending)
 
 
 @app.get("/backtest", response_model=schemas.BacktestReport)

@@ -97,7 +97,7 @@ box score (`on_off.oracle_absences`).
 - [x] **Injury name matching** — done: `features/on_off.normalize_name` (accents, suffixes, punctuation). Unmatched names are skipped; worth logging misses once live data flows.
 - [ ] **Odds budget** — free tier is 500 req/month (~16/day); keep snapshots to a few per day.
 - [ ] **Multiple predictions per game** — early "preview" + "final" near tip (schema already supports via `as_of`); wire into the pipeline timing.
-- [ ] **Observability** — a `report`/dashboard command or artifact (calibration curve, accuracy over time, CLV distribution) for the season.
+- [x] **Observability** — read-only dashboard is the betting cockpit: backtest track record + calibration, **betting track record (avg CLV / CLV-positive rate / ROI / bankroll + bet log)** via new `/bets` + `/bets/summary` API endpoints, and tonight's slate. Execution stays CLI + (future) scheduler — the dashboard never triggers commands.
 
 ---
 

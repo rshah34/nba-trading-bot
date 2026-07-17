@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { BacktestReport, ModelInfo, PredictionSummary } from "@/lib/types";
+import type {
+  BacktestReport,
+  BetRow,
+  BetsSummary,
+  ModelInfo,
+  PredictionSummary,
+} from "@/lib/types";
+import { BetsPanel } from "@/components/BetsPanel";
 import { CalibrationChart } from "@/components/CalibrationChart";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricTile } from "@/components/MetricTile";
@@ -21,6 +28,8 @@ export default function Home() {
   const [report, setReport] = useState<BacktestReport | null>(null);
   const [recent, setRecent] = useState<PredictionSummary[]>([]);
   const [upcoming, setUpcoming] = useState<PredictionSummary[]>([]);
+  const [betsSummary, setBetsSummary] = useState<BetsSummary | null>(null);
+  const [bets, setBets] = useState<BetRow[]>([]);
   const [fatalError, setFatalError] = useState<string | null>(null);
 
   // Load the model list once; default to the most-predicted model.
@@ -59,6 +68,21 @@ export default function Home() {
       });
     return () => ctrl.abort();
   }, [selected]);
+
+  // Betting track record loads independently — live paper bets aren't tied to any
+  // one backtest model. Non-fatal: an empty/missing bet log just hides the section.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    Promise.all([api.betsSummary(undefined, ctrl.signal), api.bets({ limit: 50 }, ctrl.signal)])
+      .then(([sum, rows]) => {
+        setBetsSummary(sum);
+        setBets(rows);
+      })
+      .catch(() => {
+        /* betting is optional pre-season; leave the section on its empty state */
+      });
+    return () => ctrl.abort();
+  }, []);
 
   // Derived, so we never call setState inside an effect: we're loading while the
   // model list is still null, or while the loaded report predates the selection.
@@ -155,6 +179,24 @@ export default function Home() {
               </div>
             </section>
           )}
+
+          <section className="mt-10">
+            <h2 className="mb-1 text-sm font-medium text-primary">Betting track record</h2>
+            <p className="mb-3 max-w-2xl text-xs text-secondary">
+              Paper bets, placed only where the calibrated model disagrees with the market and
+              sized by fractional Kelly. Judged by <span className="font-medium">CLV</span> — did we
+              beat the closing line — not short-run profit, which is mostly variance.
+            </p>
+            {betsSummary && (betsSummary.n_bets > 0 || betsSummary.n_pending > 0) ? (
+              <BetsPanel summary={betsSummary} rows={bets} />
+            ) : (
+              <EmptyState
+                icon="🎯"
+                title="No bets recorded yet"
+                description="Once the season starts and the live pipeline runs, sized paper bets and their CLV / ROI track record will appear here."
+              />
+            )}
+          </section>
 
           <section className="mt-10">
             <h2 className="mb-3 text-sm font-medium text-primary">Upcoming games</h2>

@@ -73,3 +73,39 @@ class BacktestReport(BaseModel):
     accuracy_confident_picks: SplitAccuracy | None = None
     accuracy_home_back_to_back: SplitAccuracy | None = None
     calibration: list[CalibrationBin] = []
+
+
+class BetRow(BaseModel):
+    """One recorded paper bet with its matchup and (once settled) CLV + P&L."""
+
+    game_id: str
+    game_date: date
+    status: str
+    home: TeamRef
+    away: TeamRef
+    home_score: int | None
+    away_score: int | None
+    model_version: str
+    side: str                    # 'home' | 'away'
+    edge: float
+    model_prob: float
+    market_prob: float
+    decimal_odds: float
+    stake_fraction: float
+    settled: bool
+    won: bool | None
+    pnl: float | None
+    clv: float | None            # prob points beaten vs. the close (north-star metric)
+    closing_decimal_odds: float | None
+
+
+class BetsSummary(BaseModel):
+    """Paper-trade track record over settled bets (+ how many are still open)."""
+
+    n_bets: int                  # settled
+    n_pending: int               # placed but not yet settled
+    win_rate: float | None
+    roi: float | None
+    final_bankroll: float
+    avg_clv: float | None
+    clv_positive_rate: float | None

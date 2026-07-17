@@ -1,9 +1,15 @@
 // Thin client for the nba_bot FastAPI. Base URL is configurable so the same
 // build can point at a local server or a deployed one.
-import type { BacktestReport, ModelInfo, PredictionSummary } from "./types";
+import type {
+  BacktestReport,
+  BetRow,
+  BetsSummary,
+  ModelInfo,
+  PredictionSummary,
+} from "./types";
 
 const BASE = (
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8010"
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
 
 export class ApiError extends Error {
@@ -49,4 +55,19 @@ export const api = {
     const qs = q.toString();
     return get<PredictionSummary[]>(`/predictions${qs ? `?${qs}` : ""}`, signal);
   },
+  bets: (
+    opts: { modelVersion?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ) => {
+    const q = new URLSearchParams();
+    if (opts.modelVersion) q.set("model_version", opts.modelVersion);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return get<BetRow[]>(`/bets${qs ? `?${qs}` : ""}`, signal);
+  },
+  betsSummary: (modelVersion?: string, signal?: AbortSignal) =>
+    get<BetsSummary>(
+      modelVersion ? `/bets/summary?model_version=${encodeURIComponent(modelVersion)}` : "/bets/summary",
+      signal,
+    ),
 };
