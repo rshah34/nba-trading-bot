@@ -11,7 +11,6 @@ from datetime import date
 
 import pandas as pd
 from nba_api.stats.endpoints import (
-    boxscoretraditionalv2,
     boxscoretraditionalv3,
     leaguegamefinder,
     scoreboardv2,
@@ -94,13 +93,6 @@ def pair_games(season_games: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@_retry
-def get_team_box_score(game_id: str) -> pd.DataFrame:
-    """Per-team traditional box score stats for a single game."""
-    box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
-    return box.team_stats.get_data_frame()
-
-
 def parse_minutes(value) -> float | None:
     """Parse a V3 'MM:SS' minutes string to float minutes; None/empty = DNP."""
     if not value or ":" not in str(value):
@@ -110,11 +102,13 @@ def parse_minutes(value) -> float | None:
 
 
 @_retry
-def get_player_box_score(game_id: str) -> pd.DataFrame:
-    """Per-player traditional box score for a game.
+def get_box_score_v3(game_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-player and per-team traditional box scores for a game, from one fetch.
 
     Uses BoxScoreTraditionalV3 — V2 stopped publishing data as of the 2025-26
-    season and returns an empty frame.
+    season and returns empty frames. One API call yields both frames, so the
+    caller can populate player_game_stats and team_game_stats without a second
+    round-trip. Returns (player_stats, team_stats).
     """
     box = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id)
-    return box.player_stats.get_data_frame()
+    return box.player_stats.get_data_frame(), box.team_stats.get_data_frame()

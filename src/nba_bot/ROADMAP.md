@@ -51,15 +51,15 @@ team, an offensive-rebounding team vs. a poor defensive-rebounding one. Give the
 model each team's **style profile** and the key mismatches, and let it reason about
 the clash (which plays to the LLM's strength).
 
-- **Data layer (prerequisite):**
-  - [ ] Extend `team_game_stats` with the raw counts the Four Factors need — `fga`, `fg3a`, `fta`, `oreb`, `dreb` (today only pcts/totals are stored) — plus each game's **opponent** line (ingest both teams' rows) so *defensive* factors are derivable.
-  - [ ] Extend V3 ingestion to populate them (the V3 boxscore already returns these fields).
-- **Feature computation (point-in-time, games ≤ `as_of`):**
-  - [ ] Per team, **offense and defense**: pace (possessions/48), eFG%, TOV%, OREB% (and opponent DREB%), FT rate — Dean Oliver's Four Factors.
-  - [ ] Derive the matchup deltas explicitly (home 3PA-rate vs. away 3P defense; OREB% vs. opp DREB%; pace vs. pace) so the *interaction* is surfaced, not just two profiles.
+- **Data layer (prerequisite):** ✅ **DONE** (migration 004 + `store_box_score`)
+  - [x] Extended `team_game_stats` with the raw counts the Four Factors need — `fgm/fga`, `fg3m/fg3a`, `ftm/fta`, `oreb`, `dreb`, `steals`, `blocks`. Both teams' rows are ingested per game, so *defensive* factors = the opponent's offensive row joined on `game_id`.
+  - [x] V3 ingestion populates them: `data_agent.store_box_score` fetches the V3 box **once** and writes both `player_game_stats` and the authoritative team box (OREB/DREB split included). Retrofit old games with `nba-bot backfill-team-box --season 2025-26`.
+- **Feature computation (point-in-time, games ≤ `as_of`):** ✅ **DONE** (`features/four_factors.py`)
+  - [x] Per team, **offense and defense**: pace, eFG%, TOV%, OREB% (defense derived from the opponents' rows in the same games), FT rate — Dean Oliver's Four Factors. Rates aggregated Σnum/Σden across the window.
+  - [x] Matchup deltas surfaced explicitly (each offense vs. the other's defense; OREB% vs. opp DREB%; pace vs. pace).
 - **Integration & test:**
-  - [ ] Surface both style profiles + the top mismatches into the Analysis Agent prompt.
-  - [ ] A/B via the backtest on a **decisive slice (~300+ games)** — see below.
+  - [x] STYLE section (both profiles + key mismatches) wired into the Analysis Agent prompt; degrades gracefully to form-only when raw counts are absent. System prompt updated to reason about the clash. Unit-tested (`tests/test_four_factors.py`); verified live.
+  - [ ] **A/B via the backtest on a ~300-game slice** — PENDING: needs (1) `nba-bot backfill-team-box --season 2025-26` to populate historical raw counts, then (2) a tagged backtest run vs. the champion.
 - *Why / honest caveat:* like other team-trend features this **may test neutral offline** (stats-only, no market to beat), but it's the feature most likely to be *orthogonal* to margin, and it compounds with the live injury/news signals — a style hole plus the injured player who plugs it is exactly where live edge appears. Complements **opponent-adjusted strength** below (both want richer team stats).
 
 - [ ] **Opponent-adjusted strength** — net rating / margin adjusted for schedule strength (raw margin ignores *who* you played). More principled than streak/momentum (which tested neutral).

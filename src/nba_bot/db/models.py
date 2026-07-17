@@ -62,6 +62,18 @@ class TeamGameStats(Base):
     assists: Mapped[int | None] = mapped_column(Integer, nullable=True)
     turnovers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plus_minus: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    # Raw counts for the Four Factors (migration 004). Offense from this row;
+    # defense derives from the opponent's row on the same game_id.
+    fgm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fga: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fg3m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fg3a: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ftm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fta: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    oreb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dreb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blocks: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class PlayerGameStats(Base):

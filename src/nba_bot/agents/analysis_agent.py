@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from nba_bot.config import settings
 from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Prediction, Team, TeamGameStats
+from nba_bot.features.four_factors import team_four_factors
 from nba_bot.markets import MarketLine, market_line_from_odds
 from nba_bot.rag import retrieval
 
@@ -157,8 +158,11 @@ _SYSTEM = (
     "and injuries. Be decisive: when one team is clearly stronger, commit to a confident "
     "probability (0.65-0.80+); only stay near 0.50 when the matchup is genuinely even. "
     "Weigh each team's leading contributors and their recent production; if a key player "
-    "is out, adjust for the scoring/impact lost. You are NOT given the betting line — this "
-    "is your own independent estimate."
+    "is out, adjust for the scoring/impact lost. When a STYLE profile is given, reason about "
+    "the stylistic matchup — the Four Factors (shooting efficiency, turnovers, rebounding, "
+    "free-throw generation) and pace — because one team's strength meeting the specific "
+    "weakness it faces can swing a game more than the overall records suggest. You are NOT "
+    "given the betting line — this is your own independent estimate."
 )
 
 
@@ -177,6 +181,40 @@ def _players_line(players: list, injuries: list) -> str:
         f"{p['name']} {p['ppg']:.0f}/{p['rpg']:.0f}/{p['apg']:.0f}"
         + (" (OUT)" if p["name"] in injured else "")
         for p in players
+    )
+
+
+def _fmt_pct(x) -> str:
+    return f"{x * 100:.1f}%" if x is not None else "n/a"
+
+
+def _style_section(home: str, away: str, hff: dict | None, aff: dict | None) -> str:
+    """Four Factors profiles + the key stylistic mismatches. Empty string when
+    either team lacks the raw-count data (e.g. a season not yet backfilled), so the
+    prompt degrades gracefully to the stats-only form."""
+    if not hff or not aff or not hff.get("games") or not aff.get("games"):
+        return ""
+
+    def off(f: dict) -> str:
+        return (f"pace {f['pace']}, eFG% {_fmt_pct(f['efg'])}, TOV% {_fmt_pct(f['tov_pct'])}, "
+                f"OREB% {_fmt_pct(f['oreb_pct'])}, FT rate {f['ft_rate']}")
+
+    def dfn(f: dict) -> str:
+        return (f"opp eFG% {_fmt_pct(f['def_efg'])}, forced TOV% {_fmt_pct(f['def_tov_pct'])}, "
+                f"DREB% {_fmt_pct(f['dreb_pct'])}, opp FT rate {f['def_ft_rate']}")
+
+    return (
+        "STYLE — Four Factors, recent games "
+        "(league avg ≈ pace 99, eFG% 54%, TOV% 13%, OREB% 27%, FT rate .25):\n"
+        f"  {home} OFF: {off(hff)}\n  {home} DEF: {dfn(hff)}\n"
+        f"  {away} OFF: {off(aff)}\n  {away} DEF: {dfn(aff)}\n"
+        "  Key matchups (each offense vs the other's defense):\n"
+        f"   - {home} eFG% {_fmt_pct(hff['efg'])} vs {away} defense {_fmt_pct(aff['def_efg'])}\n"
+        f"   - {away} eFG% {_fmt_pct(aff['efg'])} vs {home} defense {_fmt_pct(hff['def_efg'])}\n"
+        f"   - Off. rebounding: {home} OREB% {_fmt_pct(hff['oreb_pct'])} vs {away} DREB% "
+        f"{_fmt_pct(aff['dreb_pct'])}; {away} OREB% {_fmt_pct(aff['oreb_pct'])} vs {home} DREB% "
+        f"{_fmt_pct(hff['dreb_pct'])}\n"
+        f"   - Pace: {home} {hff['pace']} vs {away} {aff['pace']}\n\n"
     )
 
 
@@ -199,6 +237,7 @@ def _build_user_prompt(context: dict) -> str:
         f"REST — home {context['home_rest_days']}d (back-to-back: {context['home_b2b']}), "
         f"away {context['away_rest_days']}d (back-to-back: {context['away_b2b']})\n\n"
         f"FORM (recent games):\n{_form_line(home, hf)}\n{_form_line(away, af)}\n{edge_line}\n"
+        f"{_style_section(home, away, context.get('home_ff'), context.get('away_ff'))}"
         f"KEY PLAYERS (recent per-game pts/reb/ast):\n"
         f"  {home}: {_players_line(context['home_players'], context['home_injuries'])}\n"
         f"  {away}: {_players_line(context['away_players'], context['away_injuries'])}\n\n"
@@ -257,6 +296,8 @@ def predict_game(
     away_inj = current_injuries(session, game.away_team_id, as_of)
     home_players = player_form(session, game.home_team_id, game.game_date)
     away_players = player_form(session, game.away_team_id, game.game_date)
+    home_ff = team_four_factors(session, game.home_team_id, game.game_date)
+    away_ff = team_four_factors(session, game.away_team_id, game.game_date)
 
     news_hits = []
     if use_news:
@@ -279,6 +320,8 @@ def predict_game(
         "away_b2b": game.is_back_to_back_away,
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
+        "home_ff": asdict(home_ff),
+        "away_ff": asdict(away_ff),
         "home_players": home_players,
         "away_players": away_players,
         "home_injuries": home_inj,
@@ -299,6 +342,8 @@ def predict_game(
         "news_urls": [h.url for h in news_hits],
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
+        "home_ff": asdict(home_ff),
+        "away_ff": asdict(away_ff),
         "home_players": [p["name"] for p in home_players],
         "away_players": [p["name"] for p in away_players],
         "market": {"home_win_prob": market.home_win_prob, "home_margin": market.home_margin,

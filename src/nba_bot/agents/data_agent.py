@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -157,15 +157,23 @@ def _to_int(v) -> int | None:
         return None
 
 
-def store_player_box_score(session: Session, game_id: str) -> int:
-    """Fetch a game's player box score (V3) and upsert player_game_stats rows.
+def _pct(made, attempted) -> float | None:
+    return round(made / attempted, 3) if attempted else None
 
-    Uses BoxScoreTraditionalV3 — V2 stopped publishing as of 2025-26. Shared by
-    the live nightly ingest and the historical backfill.
+
+def store_box_score(session: Session, game_id: str) -> dict:
+    """Fetch a game's V3 box score (one API call) and upsert BOTH player_game_stats
+    and the authoritative team_game_stats box columns.
+
+    The team box gives the offensive/defensive rebound split (needed for the Four
+    Factors) that summed player rows can't. Only box columns are written to
+    team_game_stats — points and plus_minus stay owned by the final-score upsert
+    (their single source of truth), so ordering between the two never matters.
     """
-    df = nba_stats.get_player_box_score(game_id)
-    count = 0
-    for _, r in df.iterrows():
+    player_df, team_df = nba_stats.get_box_score_v3(game_id)
+
+    player_rows = 0
+    for _, r in player_df.iterrows():
         minutes = nba_stats.parse_minutes(r["minutes"])
         if minutes is None:  # DNP
             continue
@@ -193,58 +201,39 @@ def store_player_box_score(session: Session, game_id: str) -> int:
             )
             .on_conflict_do_nothing(index_elements=[PlayerGameStats.game_id, PlayerGameStats.player_id])
         )
-        count += session.execute(stmt).rowcount or 0
-    session.commit()
-    return count
+        # ON CONFLICT DO NOTHING reports rowcount -1 (psycopg) on an existing row;
+        # clamp so the count reflects genuinely-inserted rows, not conflicts.
+        player_rows += max(session.execute(stmt).rowcount or 0, 0)
 
-
-def store_team_box_from_players(session: Session, game_id: str) -> int:
-    """Populate team_game_stats box columns by aggregating the game's already-stored
-    player rows — no extra API call. Percentages and assists are exact; rebounds and
-    turnovers can slightly undercount the box score's own "team rebound/turnover"
-    lines (deadball rebounds etc.). Upserts only the box columns, so points and
-    plus_minus (from final scores) are preserved. The Four Factors work (see ROADMAP)
-    will supersede this with an authoritative team box + opponent line.
-    """
-    rows = session.execute(
-        select(
-            PlayerGameStats.team_id,
-            func.sum(PlayerGameStats.rebounds),
-            func.sum(PlayerGameStats.assists),
-            func.sum(PlayerGameStats.turnovers),
-            func.sum(PlayerGameStats.fgm),
-            func.sum(PlayerGameStats.fga),
-            func.sum(PlayerGameStats.fg3m),
-            func.sum(PlayerGameStats.fg3a),
-            func.sum(PlayerGameStats.ftm),
-            func.sum(PlayerGameStats.fta),
-        )
-        .where(PlayerGameStats.game_id == game_id)
-        .group_by(PlayerGameStats.team_id)
-    ).all()
-
-    def pct(made, attempted) -> float | None:
-        return round(made / attempted, 3) if attempted else None
-
-    n = 0
-    for team_id, reb, ast, tov, fgm, fga, fg3m, fg3a, ftm, fta in rows:
+    team_rows = 0
+    for _, r in team_df.iterrows():
+        fgm, fga = _to_int(r["fieldGoalsMade"]), _to_int(r["fieldGoalsAttempted"])
+        fg3m, fg3a = _to_int(r["threePointersMade"]), _to_int(r["threePointersAttempted"])
+        ftm, fta = _to_int(r["freeThrowsMade"]), _to_int(r["freeThrowsAttempted"])
         box = {
-            "fg_pct": pct(fgm, fga),
-            "fg3_pct": pct(fg3m, fg3a),
-            "ft_pct": pct(ftm, fta),
-            "rebounds": reb,
-            "assists": ast,
-            "turnovers": tov,
+            "fgm": fgm, "fga": fga, "fg3m": fg3m, "fg3a": fg3a, "ftm": ftm, "fta": fta,
+            "oreb": _to_int(r["reboundsOffensive"]),
+            "dreb": _to_int(r["reboundsDefensive"]),
+            "rebounds": _to_int(r["reboundsTotal"]),
+            "assists": _to_int(r["assists"]),
+            "steals": _to_int(r["steals"]),
+            "blocks": _to_int(r["blocks"]),
+            "turnovers": _to_int(r["turnovers"]),
+            "fg_pct": _pct(fgm, fga),
+            "fg3_pct": _pct(fg3m, fg3a),
+            "ft_pct": _pct(ftm, fta),
         }
         session.execute(
             pg_insert(TeamGameStats)
-            .values(game_id=game_id, team_id=team_id, **box)
+            .values(game_id=game_id, team_id=int(r["teamId"]), **box)
             .on_conflict_do_update(
                 index_elements=[TeamGameStats.game_id, TeamGameStats.team_id], set_=box
             )
         )
-        n += 1
-    return n
+        team_rows += 1
+
+    session.commit()
+    return {"player_rows": player_rows, "team_rows": team_rows}
 
 
 def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
@@ -271,10 +260,9 @@ def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
             )
             team_rows += 1
         if gid not in have_players:
-            player_rows += store_player_box_score(session, gid)
-        # Fill the team box columns (fg%, rebounds, assists, turnovers) from the
-        # player rows now that they're stored; points/plus_minus above are kept.
-        store_team_box_from_players(session, gid)
+            # One V3 fetch fills player rows AND the authoritative team box
+            # (raw counts + OREB/DREB); points/plus_minus above are preserved.
+            player_rows += store_box_score(session, gid)["player_rows"]
     session.commit()
     return {"team_stat_rows": team_rows, "player_rows": player_rows}
 

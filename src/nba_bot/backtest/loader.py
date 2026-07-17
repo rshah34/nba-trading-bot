@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from nba_bot.agents.data_agent import store_player_box_score, sync_teams
+from nba_bot.agents.data_agent import store_box_score, sync_teams
 from nba_bot.data import nba_stats
 from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
 
@@ -109,7 +109,7 @@ def backfill_player_stats(session: Session, season: str, limit: int | None = Non
     games_done, rows, failed = 0, 0, 0
     for gid in todo:
         try:
-            rows += store_player_box_score(session, gid)
+            rows += store_box_score(session, gid)["player_rows"]
         except Exception:  # noqa: BLE001 — one flaky game shouldn't abort a long backfill
             failed += 1
             continue
@@ -119,3 +119,35 @@ def backfill_player_stats(session: Session, season: str, limit: int | None = Non
 
     return {"season": season, "games_ingested": games_done, "player_rows": rows,
             "failed": failed, "pending_this_run": len(todo)}
+
+
+def backfill_team_box(session: Session, season: str, limit: int | None = None,
+                      sleep: float = 0.5) -> dict:
+    """Retrofit the authoritative team box (raw counts + OREB/DREB) onto a season
+    whose games were ingested BEFORE migration 004 — i.e. rows where team_game_stats
+    exists but fga is still NULL. Idempotent and resumable; one V3 fetch per game.
+    Games ingested after 004 already have these, so this is a one-time catch-up.
+    """
+    missing = session.execute(
+        select(TeamGameStats.game_id)
+        .join(Game, TeamGameStats.game_id == Game.game_id)
+        .where(Game.season == season, Game.status == "final", TeamGameStats.fga.is_(None))
+        .distinct()
+        .order_by(TeamGameStats.game_id)
+    ).scalars().all()
+    if limit is not None:
+        missing = missing[:limit]
+
+    games_done, failed = 0, 0
+    for gid in missing:
+        try:
+            store_box_score(session, gid)
+        except Exception:  # noqa: BLE001 — one flaky game shouldn't abort a long backfill
+            failed += 1
+            continue
+        games_done += 1
+        if sleep:
+            time.sleep(sleep)
+
+    return {"season": season, "games_backfilled": games_done, "failed": failed,
+            "pending_this_run": len(missing)}

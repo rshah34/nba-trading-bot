@@ -155,6 +155,21 @@ def evaluate():
 
 
 @app.command()
+def backfill_team_box(
+    season: str = typer.Option("2025-26", help="Season to retrofit team box raw counts for."),
+    limit: int = typer.Option(0, help="Max games this run (0 = all pending; resumable)."),
+    sleep: float = typer.Option(0.5, help="Seconds between nba.com calls (rate-limit courtesy)."),
+):
+    """Retrofit the authoritative team box (raw counts + OREB/DREB, migration 004)
+    onto a season's games that were ingested before it. One V3 fetch per game."""
+    from nba_bot.backtest import loader
+
+    with SessionLocal() as session:
+        result = loader.backfill_team_box(session, season, limit=limit or None, sleep=sleep)
+    rprint("[green]Team-box backfill:[/green]", result)
+
+
+@app.command()
 def search_news(
     query: str = typer.Argument(..., help="Free-text query to embed and search."),
     teams: str = typer.Option("", help="Comma-separated team abbreviations, e.g. LAL,BOS."),
