@@ -7,3 +7,4 @@ data/cache/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+logs/

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nba-bot.pregame</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/run_phase.sh</string>
+        <string>pregame</string>
+    </array>
+    <!-- Late morning: bet EARLY so the line has hours to move toward us before the
+         mid-afternoon `odds` capture marks the close (that gap is where CLV comes from).
+         Hour is LOCAL machine time (defaults assume a PT machine). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>10</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <!-- If the Mac was asleep at the scheduled time, run once on the next wake. -->
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/launchd.pregame.out</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/launchd.pregame.err</string>
+</dict>
+</plist>

@@ -9,14 +9,41 @@ scores resolved games.
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from nba_bot.agents import analysis_agent, betting_agent, data_agent, evaluation_agent
 
 log = logging.getLogger("nba_bot.pipeline")
+
+
+def summarize_run(result: dict) -> dict:
+    """Collapse a phase result to {step: ok} for at-a-glance monitoring."""
+    return {k: bool(v.get("ok")) for k, v in result.items() if isinstance(v, dict)}
+
+
+def append_run_log(phase: str, result: dict, log_dir: str | Path = "logs") -> dict:
+    """Append a one-line JSON run summary to logs/pipeline-runs.jsonl.
+
+    Gives an unattended scheduler a durable record of what ran and whether every
+    step succeeded, without needing to parse full console logs.
+    """
+    steps = summarize_run(result)
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "phase": phase,
+        "ok": all(steps.values()) if steps else False,
+        "steps": steps,
+    }
+    d = Path(log_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "pipeline-runs.jsonl").open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry
 
 
 def _step(name: str, fn) -> dict:

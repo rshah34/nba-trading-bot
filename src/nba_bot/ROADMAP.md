@@ -48,10 +48,12 @@ Quantifies a player's *real* impact from **with/without splits** rather than rep
 - [ ] Run `daily-pregame` / `daily-postgame` against a **seeded game-day** (verify the real predict → evaluate path fires, not just the offseason no-op).
 - [ ] Re-run once **preseason games** appear (late September) against real live data.
 
-### 3. Scheduling / deployment
-- [ ] Decide: local `cron` (simple, needs the machine awake) vs. cloud (VM / GitHub Actions cron — runs unattended).
-- [ ] Wire the two phases to fire at the right times (morning ingest+odds+preview, pre-tip final predict, post-game evaluate).
-- [ ] Add a persistent daily log / run summary for unattended monitoring.
+### 3. Scheduling / deployment — ✅ **BUILT** (local launchd; `scripts/`)
+- [x] Chose **local** over cloud: `nba_api` blocks datacenter IPs but works residentially, so ingestion must run from the Mac. `scripts/SCHEDULING.md` documents the reasoning + cron alternative.
+- [x] `scripts/run_phase.sh` (env-robust wrapper + dated logs) + launchd templates + `scripts/schedule.sh {install|uninstall|status}` (renders plists with the repo path — nothing machine-specific committed). Defaults: pregame 17:00, postgame 03:00 local (target ~5pm/3am ET); `pmset` note for waking the Mac.
+- [x] Persistent run summary: every run appends `{ts, phase, ok, steps}` to `logs/pipeline-runs.jsonl`.
+- [ ] *Season activation:* `scripts/schedule.sh install`, adjust hours for your timezone, and after ~1 week of games `calibrate --model-version claude-sonnet-5 --save`.
+- [ ] *Optional:* a second morning "preview" pregame run (needs multiple-predictions-per-game `as_of` timing + odds-budget care).
 
 ---
 

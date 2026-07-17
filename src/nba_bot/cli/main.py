@@ -82,18 +82,24 @@ def predict(
 
 @app.command()
 def daily_pregame():
-    """Pre-game phase: ingest data/injuries/results → capture odds → predict today's games."""
+    """Pre-game phase: ingest data/injuries/results → capture odds → predict → record bets."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with SessionLocal() as session:
-        rprint(pipeline.run_pregame(session))
+        result = pipeline.run_pregame(session)
+    entry = pipeline.append_run_log("pregame", result)
+    rprint(result)
+    rprint(f"[{'green' if entry['ok'] else 'yellow'}]run {'ok' if entry['ok'] else 'had failures'}:[/] {entry['steps']}")
 
 
 @app.command()
 def daily_postgame():
-    """Post-game phase: ingest final results/box scores → mark closing lines → evaluate."""
+    """Post-game phase: ingest final results/box scores → mark closing → evaluate → settle bets."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with SessionLocal() as session:
-        rprint(pipeline.run_postgame(session))
+        result = pipeline.run_postgame(session)
+    entry = pipeline.append_run_log("postgame", result)
+    rprint(result)
+    rprint(f"[{'green' if entry['ok'] else 'yellow'}]run {'ok' if entry['ok'] else 'had failures'}:[/] {entry['steps']}")
 
 
 @app.command()

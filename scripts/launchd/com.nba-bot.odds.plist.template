@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nba-bot.odds</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/run_phase.sh</string>
+        <string>odds</string>
+    </array>
+    <!-- Mid-afternoon: ~30 min before the ~4pm PT evening tips. This snapshot becomes
+         the CLOSING line, so the morning bets can be scored for CLV (the north-star metric).
+         MUST be later than the pregame/bet run or CLV collapses to ~0. Odds-only (no
+         nba_api / no Claude). Hour is LOCAL machine time (defaults assume PT). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>15</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/launchd.odds.out</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/launchd.odds.err</string>
+</dict>
+</plist>
