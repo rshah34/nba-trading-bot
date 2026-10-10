@@ -21,6 +21,21 @@ def test_confident_out_rules_him_out_and_speculation_is_ignored():
     assert not player_view([_sig("out", minutes=0, conf=0.3)]).out
 
 
+def test_a_shaky_out_blocks_his_bets_but_keeps_him_in_the_rotation():
+    view = player_view([_sig("out", minutes=0, conf=0.6, summary="left the game early")])
+    assert not view.out and view.uncertain and view.adjustment is None
+
+
+def test_only_articles_that_can_matter_today_are_read():
+    slate = {1, 2}
+    art = lambda teams, n: SimpleNamespace(team_ids=teams, raw_text="x" * n)  # noqa: E731
+    assert news_agent.worth_reading(art([2, 9], 5000), slate)        # a team that plays
+    assert not news_agent.worth_reading(art([9], 300), slate)        # only teams that are off
+    assert news_agent.worth_reading(art(None, 200), slate)           # untagged player blurb
+    assert not news_agent.worth_reading(art(None, 5000), slate)      # untagged long read
+    assert news_agent.worth_reading(art([9], 5000), None)            # no slate filter
+
+
 def test_questionable_blocks_a_bet_without_touching_the_projection():
     view = player_view([_sig("questionable", summary="game-time decision")])
     assert view.uncertain and view.reason == "game-time decision" and view.adjustment is None

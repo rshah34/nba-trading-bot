@@ -7,7 +7,7 @@ Four phases, each one CLI command. Every step inside a phase is fault-isolated (
 | pregame | `nba-bot daily-pregame` | ingest games/results/injuries + news → game odds → predict → **bet games** |
 | props | `nba-bot daily-props` | re-read injuries + news → player signals → prop odds → **bet props** → **text the best bets** |
 | close | `nba-bot daily-close` | re-capture game lines + the prop markets we hold → these become the **closing prices** |
-| postgame | `nba-bot daily-postgame` | final scores + box scores → mark closing → evaluate → **settle** (CLV + P&L) → **text results** |
+| postgame | `nba-bot daily-postgame` | final scores + box scores → mark closing → evaluate → **settle** (CLV + P&L) |
 
 ## Why local (not cloud)
 
@@ -25,7 +25,7 @@ Five jobs, at **local machine time** (defaults assume a **Pacific** machine):
 
 | Job | Default (PT) | Runs | Why then |
 |-----|--------------|------|----------|
-| postgame | 09:00 | `daily-postgame` | every game from last night is final; results text with your coffee |
+| postgame | 09:00 | `daily-postgame` | every game from last night is final; settles the bets |
 | pregame | 10:00 | `daily-pregame` | bet game lines early so they have hours to move before the close |
 | props-early | 10:45 | `daily-props --window-hours 4.25` | only games tipping before ~3pm PT (weekend/holiday matinees); a no-op otherwise |
 | props | 14:30 | `daily-props` | ~90 min before the first evening tips; **the best-bets text** |
@@ -64,7 +64,18 @@ BANKROLL=2000                       # optional: shows stakes in dollars too
 - **imessage** sends a real text through the Messages app on this Mac — no SMS provider, no cost. The first send triggers a one-time macOS prompt to let the terminal control Messages; accept it. Run `notify-test` once from a terminal *and* check the first scheduled run's log, because launchd may ask for the same permission separately.
 - **ntfy** is a push notification via [ntfy.sh](https://ntfy.sh): install the app, subscribe to a topic, and set `NOTIFY_NTFY_TOPIC` to the same name. Anyone who knows the topic can read it, so make it long and random. It is the more dependable channel under launchd, and worth enabling alongside iMessage.
 
-Every digest is also written to `logs/digest-<date>.txt` / `logs/results-<date>.txt`, so a failed send loses nothing. Preview one any time with `nba-bot digest` (add `--send` to deliver it).
+Only the best-bets text is sent. Results are written to `logs/results-<date>.txt` each morning and shown by `nba-bot digest --results`; set `NOTIFY_RESULTS=true` to have them texted too. Every digest is also written to `logs/digest-<date>.txt`, so a failed send loses nothing. Preview one any time with `nba-bot digest` (add `--send` to deliver it).
+
+## Claude API cost
+
+Two things call Claude, and both are logged per call to `logs/api-usage.jsonl` (`nba-bot costs` totals it):
+
+| Call | When | Model | Measured cost |
+|------|------|-------|---------------|
+| Game prediction | once per game per day (`pregame`) | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.012 a game, so ~$0.10 on a full night |
+| News reading | new articles about teams playing today (`props`) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
+
+Nothing is paid for twice: a game already predicted today is skipped on a re-run, each article is read once, and on a day with no games the props phase does nothing at all. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
 
 ## Odds API budget
 

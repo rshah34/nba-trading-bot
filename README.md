@@ -33,8 +33,7 @@ best bets, and scores itself against closing lines.
   who is limited, starting, or resting.
 - **Sizes bets and tracks them** — fractional Kelly on a probability blended toward the
   market, capped per player, per game and per day; settled against the box score with CLV.
-- **Texts you** — the best bets before tip and the results the next morning, by iMessage
-  or push notification.
+- **Texts you** — the best bets before tip, by iMessage or push notification.
 - **Runs live** — a scheduled daily pipeline (`pregame` / `props` / `close` / `postgame`)
   runs the whole loop for the season, with per-step error isolation.
 
@@ -110,6 +109,7 @@ nba-bot props-record     # paper record: CLV, ROI, and the model vs. the market 
 nba-bot extract-signals  # read new articles into player signals
 nba-bot digest           # print the best-bets text (--results, --send)
 nba-bot notify-test      # check the text / push channel
+nba-bot costs            # what the Claude API has actually cost, by purpose and day
 ```
 
 ### Individual steps

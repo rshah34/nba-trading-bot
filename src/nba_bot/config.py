@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     analysis_model: str = "claude-sonnet-5"
     embedding_model: str = "voyage-3"
     # Reads the day's news into structured player signals (minutes limits, role
-    # changes, absences). A few calls a day.
-    news_model: str = "claude-opus-5-5"
+    # changes, absences). Extraction, not judgement, so the small model does it.
+    news_model: str = "claude-haiku-5-5"
 
     # Player props. Each market costs one Odds API credit per game per snapshot.
     prop_markets: str = (
@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     notify_ntfy_topic: str = ""        # ntfy.sh topic (treat it like a password)
     notify_ntfy_server: str = "https://ntfy.sh"
     bankroll: float = 0.0              # optional: shows stakes in dollars in the digest
+    # Also send the morning-after results. Off: they are still written to logs/.
+    notify_results: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property

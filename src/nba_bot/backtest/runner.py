@@ -19,17 +19,14 @@ from nba_bot.backtest import loader, report
 from nba_bot.config import settings
 from nba_bot.db.engine import SessionLocal
 from nba_bot.db.models import Game
+from nba_bot.usage import PRICING
 
 log = logging.getLogger("nba_bot.backtest")
 
 # Rough output-token budget per prediction (thinking + structured payload) for
 # the cost estimate; $/1M input,output.
 _EST_OUTPUT_TOKENS = 900
-_PRICING = {
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-opus-4-8": (5.0, 25.0),
-}
+_PRICING = PRICING
 
 
 def _backtest_games(

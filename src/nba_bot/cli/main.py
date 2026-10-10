@@ -367,6 +367,24 @@ def digest(
 
 
 @app.command()
+def costs(days: int = typer.Option(30, help="How many days back to total.")):
+    """What the Claude API has actually cost, by purpose and by day."""
+    from nba_bot import usage
+
+    report = usage.summarize(days)
+    if not report["groups"]:
+        rprint("[yellow]No API calls recorded yet (logging started when this command was added).[/yellow]")
+        return
+    rprint(f"[bold]Claude API spend, last {days} days[/bold]")
+    for name, g in report["groups"].items():
+        rprint(f"  {name:30} {g['calls']:>5} calls  {g['input_tokens']:>9,} in  "
+               f"{g['output_tokens']:>9,} out  [cyan]${g['usd']:.2f}[/cyan]")
+    for day, usd in list(report["by_day"].items())[-10:]:
+        rprint(f"  [dim]{day}  ${usd:.2f}[/dim]")
+    rprint(f"  total [bold]${report['total_usd']:.2f}[/bold]")
+
+
+@app.command()
 def notify_test():
     """Send a test message on every configured channel."""
     from nba_bot import notify

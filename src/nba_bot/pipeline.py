@@ -20,10 +20,11 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nba_bot import digest, notify
+from nba_bot.config import settings
 from nba_bot.agents import (
     analysis_agent,
     betting_agent,
@@ -73,34 +74,28 @@ def _step(name: str, fn) -> dict:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _has_slate(session: Session, on: date) -> bool:
-    """Any regular-season or playoff game on the date? (No texts on empty days.)"""
-    return bool(session.execute(
-        select(func.count()).select_from(Game).where(Game.game_date == on, REAL_GAMES)
-    ).scalar())
-
-
-def _send_best_bets(session: Session, on: date, window_hours: float | None = None) -> dict:
-    if not _has_slate(session, on):
-        return {"sent": False, "reason": "no games today"}
+def _slate_teams(session: Session, on: date, window_hours: float | None = None) -> set[int]:
+    """Teams with a game still to be played on the date (tipping within the window,
+    when one is given). Empty means there is nothing to price."""
+    stmt = select(Game.home_team_id, Game.away_team_id).where(
+        Game.game_date == on, REAL_GAMES, Game.status == "scheduled")
     if window_hours is not None:
-        # The early run only speaks up when it actually covered a game.
-        soon = datetime.now(timezone.utc) + timedelta(hours=window_hours)
-        early = session.execute(
-            select(func.count()).select_from(Game).where(
-                Game.game_date == on, REAL_GAMES, Game.status == "scheduled",
-                Game.tipoff_at <= soon)
-        ).scalar()
-        if not early:
-            return {"sent": False, "reason": "no early tips"}
+        stmt = stmt.where(Game.tipoff_at <= datetime.now(timezone.utc) + timedelta(hours=window_hours))
+    return {team for row in session.execute(stmt) for team in row}
+
+
+def _send_best_bets(session: Session, on: date) -> dict:
     return {"sent": True, "channels": notify.send(digest.best_bets(session, on), "NBA best bets")}
 
 
 def _send_results(session: Session) -> dict:
+    """Results always land in logs/results-<date>.txt; they are texted only on request."""
     text = digest.results(session)
     if text is None:
         return {"sent": False, "reason": "nothing settled"}
-    return {"sent": True, "channels": notify.send(text, "NBA results", kind="results")}
+    channels = notify.send(text, "NBA results", kind="results",
+                           deliver=settings.notify_results)
+    return {"sent": settings.notify_results, "channels": channels}
 
 
 def run_pregame(session: Session, on: date | None = None) -> dict:
@@ -127,6 +122,10 @@ def run_props(session: Session, on: date | None = None,
     covers afternoon tips the main run would be too late for.
     """
     on = on or date.today()
+    teams = _slate_teams(session, on, window_hours)
+    if not teams:
+        # Nothing to price: don't fetch odds or pay a model to read news nobody will use.
+        return {"slate": {"ok": True, "result": "no games to price in this window"}}
 
     def bets() -> dict:
         result = props_agent.record_prop_bets(session, on, window_hours=window_hours)
@@ -137,11 +136,12 @@ def run_props(session: Session, on: date | None = None,
     return {
         "injuries": _step("injuries", lambda: data_agent.sync_injuries(session)),
         "news": _step("news", lambda: news_ingest.sync_news(session)),
-        "signals": _step("news-signals", lambda: news_agent.extract_signals(session)),
+        "signals": _step(
+            "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams)),
         "prop_odds": _step("prop-odds", lambda: props_agent.sync_prop_odds(
             session, window_hours=window_hours or 20)),
         "prop_bets": _step("prop-bets", bets),
-        "notify": _step("notify", lambda: _send_best_bets(session, on, window_hours)),
+        "notify": _step("notify", lambda: _send_best_bets(session, on)),
     }
 
 

@@ -7,14 +7,17 @@ game date — so a backtest never retrieves news from after the game.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import literal, or_, select
 from sqlalchemy.orm import Session
 
 from nba_bot.data import embeddings
 from nba_bot.db.models import NewsArticle, NewsChunk
+
+log = logging.getLogger("nba_bot.news")
 
 
 @dataclass
@@ -35,11 +38,23 @@ def retrieve_relevant_news(
     lookback_days: int = 7,
     k: int = 8,
 ) -> list[RetrievedChunk]:
-    """Return up to k news chunks closest to the query, for the given teams/window."""
-    query_vec = embeddings.embed_query(query)
+    """Return up to k news chunks closest to the query, for the given teams/window.
+
+    If the query can't be embedded (the embedding API is down or rate-limited), fall
+    back to the teams' most recent chunks rather than failing the prediction: recent
+    team news is most of what the semantic ranking finds anyway.
+    """
     since = as_of - timedelta(days=lookback_days)
     until = as_of + timedelta(days=1)  # include game-day news, exclude anything later
-    distance = NewsChunk.embedding.cosine_distance(query_vec)
+    try:
+        query_vec = embeddings.embed_query(query)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("query embedding failed (%s); using most recent team news", exc)
+        distance = literal(1.0)
+        order = NewsArticle.published_at.desc()
+    else:
+        distance = NewsChunk.embedding.cosine_distance(query_vec)
+        order = distance
 
     stmt = (
         select(
@@ -55,7 +70,7 @@ def retrieve_relevant_news(
         # Point-in-time window: only news known at prediction time. Articles
         # without a published_at are excluded (we can't verify their timing).
         .where(NewsArticle.published_at >= since, NewsArticle.published_at < until)
-        .order_by(distance)
+        .order_by(order)
         .limit(k)
     )
 

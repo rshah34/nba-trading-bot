@@ -61,14 +61,17 @@ def _send_ntfy(text: str, title: str) -> None:
 
 
 def send(text: str, title: str = "NBA bot", log_dir: str | Path = "logs",
-         kind: str = "digest") -> dict:
+         kind: str = "digest", deliver: bool = True) -> dict:
     """Write the message to disk, then deliver it on every configured channel.
 
-    Returns {channel: "ok" | error}. Never raises on a delivery failure.
+    `deliver=False` only writes the file. Returns {channel: "ok" | error}; never
+    raises on a delivery failure.
     """
     d = Path(log_dir)
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{kind}-{date.today():%Y-%m-%d}.txt").write_text(text + "\n")
+    if not deliver:
+        return {}
 
     result: dict[str, str] = {}
     for channel in channels():

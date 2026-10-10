@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from nba_bot import usage
 from nba_bot.config import settings
 from nba_bot.db.models import NewsArticle, NewsSignal, PlayerGameStats, Team
 from nba_bot.features.on_off import normalize_name
@@ -35,6 +36,12 @@ log = logging.getLogger("nba_bot.news")
 _BATCH_CHARS = 40_000
 # Signals below this confidence are stored but never move a projection.
 _MIN_CONFIDENCE = 0.5
+# Taking a player out of the rotation moves every teammate's projection, and a wrong
+# guess there is worse than no guess — so a news "out" has to be firm. Below this it
+# only blocks bets on him, the same as "questionable".
+_OUT_CONFIDENCE = 0.75
+# An untagged article this short is a player-news blurb, cheap enough to always read.
+_BLURB_CHARS = 600
 _UNCERTAIN_KINDS = {"doubtful", "questionable"}
 
 Kind = Literal["out", "doubtful", "questionable", "minutes_limit", "role_up", "role_down",
@@ -107,16 +114,38 @@ def _prompt(batch: list[NewsArticle]) -> str:
     return "\n\n".join(parts)
 
 
+def worth_reading(article: NewsArticle, team_ids: set[int] | None) -> bool:
+    """Should this article be sent to the model for today's slate?
+
+    Reading is the paid step, so only articles that can move a projection today go:
+    those tagged with a team that plays, plus short untagged items — the player-news
+    blurbs ("X: questionable Friday") name a player but often no team, and cost
+    almost nothing. A long piece about teams that are off today waits; if they play
+    tomorrow and it is still recent, it is read then.
+    """
+    if team_ids is None:
+        return True
+    tagged = set(article.team_ids or [])
+    if tagged:
+        return bool(tagged & team_ids)
+    return len(article.raw_text or "") <= _BLURB_CHARS
+
+
 def extract_signals(
     session: Session,
     client: anthropic.Anthropic | None = None,
     lookback_hours: int = 48,
     model: str | None = None,
+    team_ids: set[int] | None = None,
 ) -> dict:
-    """Mine not-yet-read recent articles for player signals. Each article is read once."""
+    """Mine not-yet-read recent articles for player signals. Each article is read once.
+
+    `team_ids` limits reading to what matters for those teams (see `worth_reading`);
+    None reads everything recent.
+    """
     model = model or settings.news_model
     now = datetime.now(timezone.utc)
-    articles = session.execute(
+    recent = session.execute(
         select(NewsArticle)
         .where(
             NewsArticle.signals_extracted_at.is_(None),
@@ -125,8 +154,9 @@ def extract_signals(
         )
         .order_by(NewsArticle.published_at)
     ).scalars().all()
+    articles = [a for a in recent if worth_reading(a, team_ids)]
     if not articles:
-        return {"articles": 0, "signals": 0}
+        return {"articles": 0, "signals": 0, "left_unread": len(recent)}
 
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
     teams = {t.abbreviation.upper(): t.team_id for t in session.execute(select(Team)).scalars()}
@@ -152,6 +182,7 @@ def extract_signals(
             log.warning("signal extraction failed for %d article(s): %s", len(batch), exc)
             failed += len(batch)
             continue
+        usage.record("news", model, response)
         parsed = response.parsed_output if response.stop_reason != "refusal" else None
         for sig in (parsed.signals if parsed else []):
             if not 1 <= sig.article <= len(batch):
@@ -176,7 +207,8 @@ def extract_signals(
         for a in batch:
             a.signals_extracted_at = now
         session.commit()
-    return {"articles": len(articles), "signals": stored, "failed_articles": failed}
+    return {"articles": len(articles), "signals": stored, "failed_articles": failed,
+            "left_unread": len(recent) - len(articles)}
 
 
 def active_signals(session: Session, as_of: datetime) -> dict[int, list[NewsSignal]]:
@@ -219,9 +251,9 @@ def player_view(signals: list) -> PlayerView:
         if conf < _MIN_CONFIDENCE or s.kind in seen:
             continue
         seen.add(s.kind)
-        if s.kind == "out":
+        if s.kind == "out" and conf >= _OUT_CONFIDENCE:
             return PlayerView(out=True, reason=s.summary)
-        if s.kind in _UNCERTAIN_KINDS:
+        if s.kind == "out" or s.kind in _UNCERTAIN_KINDS:
             view.uncertain = True
             view.reason = view.reason or s.summary
             continue

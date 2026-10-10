@@ -12,6 +12,7 @@ exactly what context it saw (context_used), so backtests replay honestly.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -21,6 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from nba_bot import usage
 from nba_bot.config import settings
 from nba_bot.db.models import (
     REAL_GAMES,
@@ -36,6 +38,8 @@ from nba_bot.features.four_factors import team_four_factors
 from nba_bot.features.on_off import oracle_absences, team_on_off
 from nba_bot.markets import MarketLine, market_line_from_odds
 from nba_bot.rag import retrieval
+
+log = logging.getLogger("nba_bot.analysis")
 
 # Injury statuses worth surfacing to the model (skip healthy/available noise).
 _RELEVANT_INJURY_STATUSES = {"out", "doubtful", "questionable", "day-to-day", "gtd"}
@@ -331,6 +335,7 @@ def _generate_prediction(
         messages=[{"role": "user", "content": user}],
         output_format=GamePrediction,
     )
+    usage.record("game", model, response)
     return response.parsed_output
 
 
@@ -488,15 +493,40 @@ def run_predictions(
     game_date: date,
     as_of: datetime | None = None,
     model_version: str | None = None,
+    force: bool = False,
 ) -> list[Prediction]:
-    """Predict every scheduled game on a date."""
+    """Predict every scheduled game on a date that doesn't have a prediction yet.
+
+    A game already predicted by this model is skipped: the phase can run more than
+    once in a day (a manual run, a job catching up after sleep), and each repeat
+    would otherwise pay for the whole slate again. `force=True` re-predicts.
+    """
     game_ids = session.execute(
         # Preseason is exhibition — predicting it would pollute the track record.
         select(Game.game_id).where(
             Game.game_date == game_date, Game.status == "scheduled", REAL_GAMES
         )
     ).scalars().all()
+    if not force and game_ids:
+        done = set(session.execute(
+            select(Prediction.game_id).where(
+                Prediction.game_id.in_(game_ids),
+                Prediction.model_version == (model_version or settings.analysis_model),
+            )
+        ).scalars())
+        game_ids = [gid for gid in game_ids if gid not in done]
+    if not game_ids:
+        return []
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    return [predict_game(session, gid, as_of=as_of, model_version=model_version, client=client)
-            for gid in game_ids]
+    predictions = []
+    for gid in game_ids:
+        # One game failing (an API error, a refusal) must not cost the rest of the slate.
+        try:
+            predictions.append(
+                predict_game(session, gid, as_of=as_of, model_version=model_version, client=client)
+            )
+        except Exception:  # noqa: BLE001
+            session.rollback()
+            log.exception("prediction failed for game %s", gid)
+    return predictions
