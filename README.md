@@ -9,10 +9,8 @@ best bets, and scores itself against closing lines.
 - **Ingests structured data** — schedules, scores, rest/back-to-backs, team & player
   box scores (`nba_api`), injury reports (ESPN), and live betting odds across
   sportsbooks (The Odds API).
-- **Ingests unstructured news via RAG** — NBA news is chunked, embedded with Voyage,
-  stored in `pgvector`, and semantically retrieved per matchup.
 - **Predicts with an LLM agent** — for each game, Claude reasons over point-in-time
-  stats, injuries, key-player production, and retrieved news to output a calibrated
+  stats, injuries, key-player production, and the strongest news reports to output a calibrated
   win probability + predicted margin. It is blind to the betting line, so the
   estimate is independent.
 - **Finds edge** — the model's probability is compared to the **de-vigged** market
@@ -27,13 +25,16 @@ best bets, and scores itself against closing lines.
   distribution: minutes × per-minute rate × opponent × a team **minutes budget** that
   redistributes playing time when rotation players are out. Backtestable on a whole
   season for free (`nba-bot props-backtest`).
-- **Reads the news for it** — eight feeds, full article text. Claude turns each new
-  article into structured player signals (out, minutes limit, role change, returning)
-  that adjust the projections. The injury report only says who is out; the news says
-  who is limited, starting, or resting.
-- **Sizes bets and tracks them** — fractional Kelly on a probability blended toward the
-  market, capped per player, per game and per day; settled against the box score with CLV.
-- **Texts you** — the best bets before tip, by iMessage or push notification.
+- **Reads the news** — eight feeds, full article text. Claude turns each new article
+  into structured player signals (out, minutes limit, role change, returning). Reports
+  of the same thing are consolidated and ranked by how firmly and widely they are
+  sourced, then feed both models. The injury report only says who is out; the news
+  says who is limited, starting, or resting.
+- **Makes a few picks a day** — at most three bets across game winners and props,
+  ranked by edge at current prices, sized by fractional Kelly on a probability blended
+  toward the market, and settled against the result with CLV. Prop picks come with
+  single-stat guidance (the points / rebounds / assists lines the model would bet).
+- **Texts you** — the day's best bets before tip, as an iMessage sent from the Mac it runs on.
 - **Runs live** — a scheduled daily pipeline (`pregame` / `props` / `close` / `postgame`)
   runs the whole loop for the season, with per-step error isolation.
 
@@ -43,7 +44,7 @@ best bets, and scores itself against closing lines.
 
 ```
                          ┌───────────────────────────────────────────────┐
-   DATA SOURCES          │              POSTGRES + pgvector              │
+   DATA SOURCES          │                   POSTGRES                    │
    ┌──────────────┐      │  teams · games · team/player_game_stats ·     │
    │ nba_api      │─────▶│  injuries · odds · news_articles/news_chunks ·│
    │ ESPN (inj.)  │      │  predictions · prediction_evaluations         │
@@ -60,30 +61,30 @@ best bets, and scores itself against closing lines.
    └──────────────┘          └──────────────┘      └──────────────────┘
           │                         │                      │
           └──────────  BACKTEST (replay a season)  ────────┘
-                 LIVE DAILY PIPELINE (pregame / postgame)
+         LIVE DAILY PIPELINE (pregame / props / close / postgame)
 ```
 
 ## Getting started
 
 ### Prerequisites
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/)
-- Docker (for Postgres + pgvector)
-- API keys: [Anthropic](https://console.anthropic.com/), [The Odds API](https://the-odds-api.com/) (free tier: 500 req/mo), [Voyage](https://www.voyageai.com/) (free tier)
+- Docker (for Postgres)
+- API keys: [Anthropic](https://console.anthropic.com/), [The Odds API](https://the-odds-api.com/) (free tier: 500 req/mo)
 
 ### Setup
 
 ```bash
 # 1. Configure secrets
 cp .env.example .env
-#    then fill in POSTGRES_PASSWORD (openssl rand -hex 24) + the three API keys
+#    then fill in POSTGRES_PASSWORD (openssl rand -hex 24) + the two API keys
 
-# 2. Start Postgres + pgvector (reads POSTGRES_* from .env)
+# 2. Start Postgres (reads POSTGRES_* from .env)
 docker compose up -d
 
 # 3. Install dependencies
 uv sync
 
-# 4. Apply the schema (auto-applied on first container boot; safe to run anyway)
+# 4. Apply the schema (every migration, in order; safe to re-run after pulling new ones)
 uv run nba-bot init-db
 ```
 
@@ -93,10 +94,10 @@ All commands run via `uv run nba-bot <command>`.
 
 ### Daily operation (in season)
 ```bash
-nba-bot daily-pregame    # ingest data/injuries/results/news → game odds → predict → bet games
-nba-bot daily-props      # injuries + news → player signals → prop odds → bet props → text best bets
+nba-bot daily-pregame    # ingest data/injuries/results/news → predict each game
+nba-bot daily-props      # injuries + news → current odds → choose the day's 2–3 picks → text them
 nba-bot daily-close      # near-tip snapshot: the closing prices CLV is measured against
-nba-bot daily-postgame   # final results/box scores → mark closing → evaluate → settle → text results
+nba-bot daily-postgame   # final results/box scores → mark closing → evaluate → settle
 ```
 `scripts/schedule.sh install` runs these on a timer — see [scripts/SCHEDULING.md](scripts/SCHEDULING.md),
 which also covers setting up the texts.
@@ -104,11 +105,11 @@ which also covers setting up the texts.
 ### Player props
 ```bash
 nba-bot props-backtest   # score the projection model on a full season (free, no API calls)
-nba-bot props            # preview today's best prop bets (add --refresh-odds, --record)
+nba-bot picks            # preview today's picks across games + props (--refresh-odds, --record)
 nba-bot props-record     # paper record: CLV, ROI, and the model vs. the market on every line
 nba-bot extract-signals  # read new articles into player signals
-nba-bot digest           # print the best-bets text (--results, --send)
-nba-bot notify-test      # check the text / push channel
+nba-bot digest           # print the best-bets text (--results for last night, --send to text it)
+nba-bot notify-test      # send a test text
 nba-bot costs            # what the Claude API has actually cost, by purpose and day
 ```
 
@@ -117,14 +118,15 @@ nba-bot costs            # what the Claude API has actually cost, by purpose and
 nba-bot ingest           # teams, games (today+tomorrow), injuries, recent box/player stats
 nba-bot ingest-odds      # snapshot current odds (run a few times/day to capture line movement)
 nba-bot mark-closing     # flag the last pre-tip odds per book as the closing line
-nba-bot ingest-news      # fetch NBA news → embed → store for RAG
+nba-bot ingest-news      # fetch NBA news from the RSS feeds
 nba-bot predict          # win prob + edge for today's scheduled games
 nba-bot evaluate         # score resolved predictions → Brier / log-loss / CLV track record
-nba-bot search-news "..."# debug RAG retrieval
 ```
 
 ### Backtesting
 ```bash
+# First time on a past season: load it, then fetch its box scores (one call per game).
+nba-bot backfill-box-scores --season 2025-26
 # Estimates cost first; add --run to actually spend. --slice start|mid|end, --tag labels the run.
 nba-bot backtest --season 2025-26 --limit 100 --model claude-haiku-4-5 --slice mid --run
 ```

@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -90,64 +90,31 @@ def load_season(session: Session, season: str) -> dict:
     return {"season": season, "games": games, "team_game_stat_rows": stats_rows}
 
 
-def backfill_player_stats(session: Session, season: str, limit: int | None = None,
-                          sleep: float = 0.5) -> dict:
-    """Fetch per-player box scores for a season's final games and store them
-    (via data_agent.store_player_box_score). Idempotent: skips games already
-    ingested, so a failed run resumes on re-run. `sleep` throttles nba.com calls.
+def backfill_box_scores(session: Session, season: str, limit: int | None = None,
+                        sleep: float = 0.5) -> dict:
+    """Fetch box scores for a season's final games that are missing them.
+
+    One V3 call per game fills both the player lines and the team raw counts, so
+    this is the single backfill for a freshly loaded season. Resumable: a game that
+    already has both is skipped. `sleep` is a courtesy pause between nba.com calls.
     """
-    final_ids = session.execute(
+    have_players = select(PlayerGameStats.game_id)
+    have_team_box = select(TeamGameStats.game_id).where(TeamGameStats.fga.is_not(None))
+    stmt = (
         select(Game.game_id)
-        .where(Game.season == season, Game.status == "final", Game.home_score.is_not(None))
-        .order_by(Game.game_date, Game.game_id)
-    ).scalars().all()
-    done = set(session.execute(select(PlayerGameStats.game_id).distinct()).scalars().all())
-    todo = [gid for gid in final_ids if gid not in done]
-    if limit is not None:
-        todo = todo[:limit]
+        .where(
+            Game.season == season, Game.status == "final", Game.home_score.is_not(None),
+            or_(Game.game_id.not_in(have_players), Game.game_id.not_in(have_team_box)),
+        )
+        .order_by(Game.game_date)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    pending = session.execute(stmt).scalars().all()
 
-    games_done, rows, failed = 0, 0, 0
-    for gid in todo:
-        try:
-            rows += store_box_score(session, gid)["player_rows"]
-        except Exception:  # noqa: BLE001 — one flaky game shouldn't abort a long backfill
-            failed += 1
-            continue
-        games_done += 1
-        if sleep:
-            time.sleep(sleep)
-
-    return {"season": season, "games_ingested": games_done, "player_rows": rows,
-            "failed": failed, "pending_this_run": len(todo)}
-
-
-def backfill_team_box(session: Session, season: str, limit: int | None = None,
-                      sleep: float = 0.5) -> dict:
-    """Retrofit the authoritative team box (raw counts + OREB/DREB) onto a season
-    whose games were ingested BEFORE migration 004 — i.e. rows where team_game_stats
-    exists but fga is still NULL. Idempotent and resumable; one V3 fetch per game.
-    Games ingested after 004 already have these, so this is a one-time catch-up.
-    """
-    missing = session.execute(
-        select(TeamGameStats.game_id)
-        .join(Game, TeamGameStats.game_id == Game.game_id)
-        .where(Game.season == season, Game.status == "final", TeamGameStats.fga.is_(None))
-        .distinct()
-        .order_by(TeamGameStats.game_id)
-    ).scalars().all()
-    if limit is not None:
-        missing = missing[:limit]
-
-    games_done, failed = 0, 0
-    for gid in missing:
-        try:
-            store_box_score(session, gid)
-        except Exception:  # noqa: BLE001 — one flaky game shouldn't abort a long backfill
-            failed += 1
-            continue
-        games_done += 1
-        if sleep:
-            time.sleep(sleep)
-
-    return {"season": season, "games_backfilled": games_done, "failed": failed,
-            "pending_this_run": len(missing)}
+    fetched = 0
+    for gid in pending:
+        store_box_score(session, gid)
+        fetched += 1
+        time.sleep(sleep)
+    return {"games_fetched": fetched}

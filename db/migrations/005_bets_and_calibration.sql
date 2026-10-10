@@ -4,7 +4,7 @@
 -- taken and the sized stake; scored after the game with CLV (vs. the closing line)
 -- and P&L. CLV is the north-star metric — it needs only the closing line, not the
 -- outcome, so it's the durable signal; P&L is the noisy one.
-CREATE TABLE bets (
+CREATE TABLE IF NOT EXISTS bets (
     id                   SERIAL PRIMARY KEY,
     game_id              TEXT NOT NULL REFERENCES games(game_id),
     prediction_id        INTEGER REFERENCES predictions(id),
@@ -24,12 +24,12 @@ CREATE TABLE bets (
     settled_at           TIMESTAMPTZ,
     CONSTRAINT bets_game_model_key UNIQUE (game_id, model_version)  -- one bet per game per model
 );
-CREATE INDEX idx_bets_unsettled ON bets(settled_at) WHERE settled_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_bets_unsettled ON bets(settled_at) WHERE settled_at IS NULL;
 
 -- Fitted Platt calibration parameters per model version (from `nba-bot calibrate --save`).
 -- The live pipeline applies these to raw probabilities before deciding bets. Empty =
 -- apply no calibration (honest bootstrap until enough live games resolve to fit).
-CREATE TABLE calibration_params (
+CREATE TABLE IF NOT EXISTS calibration_params (
     model_version TEXT PRIMARY KEY,
     a             NUMERIC NOT NULL,   -- logit slope (<1 shrinks toward 0.5)
     b             NUMERIC NOT NULL,   -- logit intercept

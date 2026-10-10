@@ -8,20 +8,26 @@ from rich import print as rprint
 from nba_bot import pipeline
 from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
 from nba_bot.db.engine import SessionLocal, engine
-from nba_bot.rag import ingest as news_ingest
-from nba_bot.rag import retrieval
 
 app = typer.Typer()
 
 
 @app.command()
 def init_db():
-    """Apply the SQL schema to DATABASE_URL. No-op if tables already exist."""
-    sql_path = Path(__file__).resolve().parents[3] / "db" / "migrations" / "001_init.sql"
-    with engine.connect() as conn:
-        conn.exec_driver_sql(sql_path.read_text())
-        conn.commit()
-    rprint(f"[green]Applied schema from {sql_path}[/green]")
+    """Apply every migration in db/migrations, in order. Safe to re-run: each one
+    only adds what is missing, so this also brings an existing database up to date."""
+    migrations = sorted((Path(__file__).resolve().parents[3] / "db" / "migrations").glob("*.sql"))
+    # The raw driver connection, with no parameters, so a "%" in a SQL comment isn't
+    # read as a placeholder and a file can hold several statements.
+    raw = engine.raw_connection()
+    try:
+        with raw.cursor() as cur:
+            for path in migrations:
+                cur.execute(path.read_text())
+                rprint(f"[green]applied[/green] {path.name}")
+        raw.commit()
+    finally:
+        raw.close()
 
 
 @app.command()
@@ -53,9 +59,11 @@ def mark_closing():
 
 @app.command()
 def ingest_news():
-    """Fetch NBA news (RSS), embed new articles with Voyage, store in news_chunks."""
+    """Fetch NBA news from the RSS feeds and store articles not seen before."""
+    from nba_bot.agents import news_agent
+
     with SessionLocal() as session:
-        result = news_ingest.sync_news(session)
+        result = news_agent.sync_news(session)
     rprint("[green]News ingestion complete:[/green]", result)
 
 
@@ -124,15 +132,6 @@ def backtest(
     model: str = typer.Option("claude-haiku-4-5", help="Claude model for predictions."),
     season_slice: str = typer.Option("start", "--slice", help="Part of season: start|mid|end."),
     tag: str = typer.Option("", "--tag", help="Label this run (e.g. v1/v2) so reports don't mix."),
-    oracle_injuries: bool = typer.Option(
-        False, "--oracle-injuries",
-        help="Derive availability from each game's own box score to measure the on-off "
-             "feature's CEILING. Optimistic + mildly look-ahead — not a real track record.",
-    ),
-    baseline: bool = typer.Option(
-        False, "--baseline",
-        help="Champion prompt: drop the Four Factors / on-off sections for a clean A/B baseline.",
-    ),
     concurrency: int = typer.Option(8, help="Parallel prediction workers (each its own DB session)."),
     run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
 ):
@@ -143,8 +142,9 @@ def backtest(
     from nba_bot.config import settings
 
     with SessionLocal() as session:
-        rprint(f"[cyan]Loading {season}...[/cyan]")
-        rprint("  ", loader.load_season(session, season))
+        if not runner._backtest_games(session, season, 1, "start"):
+            rprint(f"[cyan]Loading {season}...[/cyan]")
+            rprint("  ", loader.load_season(session, season))
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         games = runner._backtest_games(session, season, limit, season_slice)
         est = runner.estimate_cost(session, games, model, client)
@@ -158,13 +158,9 @@ def backtest(
             return
 
         rprint(f"[cyan]Running {len(games)} predictions...[/cyan]")
-        if oracle_injuries:
-            rprint("[yellow]--oracle-injuries: availability taken from each game's own box "
-                   "score. This measures the CEILING, not a real track record.[/yellow]")
         rep = runner.predict_and_evaluate(
             session, games, model, runner.model_version_for(season, model, season_slice, tag),
-            client=client, oracle_injuries=oracle_injuries, use_matchup_features=not baseline,
-            concurrency=concurrency,
+            client=client, concurrency=concurrency,
         )
         rprint("\n[green bold]=== Backtest report ===[/green bold]")
         if rep.get("failed"):
@@ -285,32 +281,30 @@ def props_backtest(
 
 
 @app.command()
-def props(
+def picks(
     game_date: str = typer.Option("", help="Date to price (YYYY-MM-DD). Defaults to today."),
-    dry_run: bool = typer.Option(True, "--dry-run/--record", help="Preview (default) or record bets."),
-    refresh_odds: bool = typer.Option(False, "--refresh-odds", help="Buy a fresh prop-odds snapshot first."),
-    preseason: bool = typer.Option(False, "--preseason", help="Include preseason games (rehearsal only)."),
+    dry_run: bool = typer.Option(True, "--dry-run/--record", help="Preview (default) or record the picks."),
+    refresh_odds: bool = typer.Option(False, "--refresh-odds", help="Buy fresh game + prop odds first."),
 ):
-    """Price today's player props and show the best bets."""
+    """Show today's picks: the few best bets across game winners and player props."""
+    from nba_bot import digest as digest_mod
+    from nba_bot import picks as picks_mod
     from nba_bot.agents import props_agent
-    from nba_bot.features.props import MARKET_LABELS
 
     target = date.fromisoformat(game_date) if game_date else date.today()
     with SessionLocal() as session:
         if refresh_odds:
-            rprint("[cyan]prop odds:[/cyan]", props_agent.sync_prop_odds(session, include_preseason=preseason))
-        result = props_agent.record_prop_bets(session, target, dry_run=dry_run, include_preseason=preseason)
-    rprint(f"{result['candidates']} candidate(s) cleared the edge threshold; "
-           f"{len(result['bets'])} selected"
+            rprint("[cyan]game odds:[/cyan]", data_agent.sync_odds(session))
+            rprint("[cyan]prop odds:[/cyan]", props_agent.sync_prop_odds(session))
+        result = picks_mod.make_picks(session, target, dry_run=dry_run)
+    rprint(f"{result['game_candidates']} game and {result['prop_candidates']} prop bet(s) cleared "
+           f"the edge threshold; {result['slots']} slot(s) open today; {len(result['picks'])} picked"
            + ("" if dry_run else f", {result['placed']} recorded") + ".")
-    for b in result["bets"]:
-        d = b["decision"]
-        rprint(f"[bold]{b['player_name']}[/bold] ({b['team']}, {b['matchup']})  "
-               f"[cyan]{d.side.upper()} {d.line:g} {MARKET_LABELS[b['market']]}[/cyan] "
-               f"@ {d.decimal_odds} {d.sportsbook}  proj {b['proj_mean']:.1f} in {b['proj_minutes']:.0f}m  "
-               f"model {d.model_prob:.0%} vs mkt {d.market_prob:.0%}  EV {d.expected_value:+.1%}  "
-               f"stake {d.stake_fraction:.2%}")
-        for note in b["notes"]:
+    for c in result["picks"]:
+        d = c["decision"]
+        rprint(f"  [bold]{digest_mod.pick_label(c)}[/bold] @ {d.decimal_odds}  model {d.model_prob:.0%} "
+               f"vs mkt {d.market_prob:.0%}  edge {d.edge:+.1%}  stake {d.stake_fraction:.2%}")
+        for note in c.get("notes", []):
             rprint(f"       [dim]{note}[/dim]")
 
 
@@ -321,7 +315,7 @@ def props_record():
 
     with SessionLocal() as session:
         rec = props_agent.track_record(session)
-    if not rec["n_bets"] and "lines" not in rec:
+    if not rec["n_bets"] and "lines" not in rec and "guide" not in rec:
         rprint("[yellow]No settled prop bets or scored lines yet.[/yellow]")
         return
     if rec["n_bets"]:
@@ -329,6 +323,10 @@ def props_record():
                if rec["avg_clv"] is not None else "n/a")
         rprint(f"[bold]Prop bets[/bold]: {rec['wins']}-{rec['losses']}-{rec['pushes']}  "
                f"{rec['units']:+.1f}u  ROI {rec['roi']:+.1%}  avg CLV [cyan]{clv}[/cyan]")
+    if "guide" in rec:
+        g = rec["guide"]
+        rprint(f"[bold]Single-stat guidance[/bold]: {g['hits']} of {g['calls']} calls came in "
+               f"({g['hits'] / g['calls']:.0%}; the model's bar is {g['target']:.0%})")
     if "lines" in rec:
         ln = rec["lines"]
         rprint(f"[bold]Every priced line[/bold] (n={ln['n']}): Brier model {ln['brier_model']} | "
@@ -348,10 +346,10 @@ def extract_signals():
 @app.command()
 def digest(
     game_date: str = typer.Option("", help="Date (YYYY-MM-DD). Defaults to today."),
-    results: bool = typer.Option(False, "--results", help="Show the results text instead."),
-    send: bool = typer.Option(False, "--send", help="Deliver it on the configured channels."),
+    results: bool = typer.Option(False, "--results", help="Show last night's results instead."),
+    send: bool = typer.Option(False, "--send", help="Also text it."),
 ):
-    """Print (and optionally send) the best-bets or results text."""
+    """Print (and optionally text) the best-bets message, or last night's results."""
     from nba_bot import digest as digest_mod
     from nba_bot import notify
 
@@ -363,7 +361,7 @@ def digest(
         return
     print(text)
     if send:
-        rprint(notify.send(text, "NBA results" if results else "NBA best bets"))
+        rprint("text:", notify.send(text, kind="results" if results else "digest"))
 
 
 @app.command()
@@ -373,7 +371,7 @@ def costs(days: int = typer.Option(30, help="How many days back to total.")):
 
     report = usage.summarize(days)
     if not report["groups"]:
-        rprint("[yellow]No API calls recorded yet (logging started when this command was added).[/yellow]")
+        rprint("[yellow]No API calls recorded yet.[/yellow]")
         return
     rprint(f"[bold]Claude API spend, last {days} days[/bold]")
     for name, g in report["groups"].items():
@@ -386,14 +384,14 @@ def costs(days: int = typer.Option(30, help="How many days back to total.")):
 
 @app.command()
 def notify_test():
-    """Send a test message on every configured channel."""
+    """Send a test text to the configured number."""
     from nba_bot import notify
 
-    if not notify.channels():
-        rprint("[yellow]No channels configured. Set NOTIFY_CHANNELS in .env "
-               "(imessage and/or ntfy) — see scripts/SCHEDULING.md.[/yellow]")
-        return
-    rprint(notify.send("NBA bot test: notifications are working.", "NBA bot test", kind="test"))
+    result = notify.send("NBA bot test: notifications are working.", kind="test")
+    if result == "off":
+        rprint("[yellow]NOTIFY_IMESSAGE_TO is not set in .env — nothing sent.[/yellow]")
+    else:
+        rprint("text:", result)
 
 
 @app.command()
@@ -410,45 +408,20 @@ def evaluate():
 
 
 @app.command()
-def backfill_team_box(
-    season: str = typer.Option("2025-26", help="Season to retrofit team box raw counts for."),
+def backfill_box_scores(
+    season: str = typer.Option("2025-26", help="Season to fetch box scores for."),
     limit: int = typer.Option(0, help="Max games this run (0 = all pending; resumable)."),
     sleep: float = typer.Option(0.5, help="Seconds between nba.com calls (rate-limit courtesy)."),
 ):
-    """Retrofit the authoritative team box (raw counts + OREB/DREB, migration 004)
-    onto a season's games that were ingested before it. One V3 fetch per game."""
+    """Fetch player + team box scores for a loaded season's games that lack them.
+
+    Only needed when setting up a past season from scratch; the daily pipeline
+    keeps the current season filled in."""
     from nba_bot.backtest import loader
 
     with SessionLocal() as session:
-        result = loader.backfill_team_box(session, season, limit=limit or None, sleep=sleep)
-    rprint("[green]Team-box backfill:[/green]", result)
-
-
-@app.command()
-def search_news(
-    query: str = typer.Argument(..., help="Free-text query to embed and search."),
-    teams: str = typer.Option("", help="Comma-separated team abbreviations, e.g. LAL,BOS."),
-    lookback: int = typer.Option(7, help="Only consider articles from the last N days."),
-    k: int = typer.Option(5, help="Number of chunks to return."),
-):
-    """Debug the RAG retrieval: embed a query and print the closest news chunks."""
-    from nba_api.stats.static import teams as static_teams
-
-    by_abbr = {t["abbreviation"]: t["id"] for t in static_teams.get_teams()}
-    team_ids = [by_abbr[a.strip().upper()] for a in teams.split(",") if a.strip()]
-    if not team_ids:
-        team_ids = list(by_abbr.values())  # no filter -> all teams
-
-    with SessionLocal() as session:
-        hits = retrieval.retrieve_relevant_news(
-            session, query=query, team_ids=team_ids, as_of=date.today(), lookback_days=lookback, k=k
-        )
-    if not hits:
-        rprint("[yellow]No matching news chunks.[/yellow]")
-        return
-    for h in hits:
-        rprint(f"[cyan]{h.distance:.3f}[/cyan] [bold]{h.title}[/bold] [dim]({h.source})[/dim]")
-        rprint(f"       {h.chunk_text[:200]}")
+        result = loader.backfill_box_scores(session, season, limit=limit or None, sleep=sleep)
+    rprint("[green]Box-score backfill:[/green]", result)
 
 
 @app.command()

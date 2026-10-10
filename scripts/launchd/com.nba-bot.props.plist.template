@@ -9,9 +9,9 @@
         <string>__REPO__/scripts/run_phase.sh</string>
         <string>props</string>
     </array>
-    <!-- Mid-afternoon: ~90 min before the first evening tips (~4pm PT). Later than
-         the game bets on purpose: props are won on knowing who plays, and the injury
-         report firms up through the day. Sends the best-bets text.
+    <!-- Mid-afternoon: ~90 min before the first evening tips (~4pm PT). Chooses the
+         day's picks across game winners and props, at current prices and on the
+         freshest injury news, and sends the text.
          Hour is LOCAL machine time (defaults assume PT). -->
     <key>StartCalendarInterval</key>
     <dict>

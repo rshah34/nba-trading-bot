@@ -24,6 +24,14 @@ def _log(n, minutes=30.0, pts=20, start=date(2026, 1, 1), **stats):
     ]
 
 
+def test_normalize_name_folds_accents_suffixes_punctuation():
+    assert props.normalize_name("Luka Dončić") == "luka doncic"
+    assert props.normalize_name("Jaren Jackson Jr.") == "jaren jackson"
+    assert props.normalize_name("R.J. Barrett") == "rj barrett"
+    # Sportsbook, ESPN and box-score spellings must land on the same key.
+    assert props.normalize_name("Nikola Jokić") == props.normalize_name("Nikola Jokic")
+
+
 def test_over_under_probabilities_are_a_distribution():
     for mean, phi, line in ((22.0, 3.1, 24.5), (4.2, 1.4, 4.5), (0.6, 1.1, 0.5), (8.0, 1.0, 7.5)):
         over, under, push = over_under_probs(mean, phi, line)
@@ -103,8 +111,40 @@ def test_project_team_raises_the_survivors_when_a_starter_is_missing():
     assert flat[7].mean("player_points") == pytest.approx(healthy[7].mean("player_points"))
 
 
+def test_quota_month_pacing():
+    from datetime import date as d
+
+    from nba_bot.agents.props_agent import credits_to_hold_back, days_until_reset
+
+    assert days_until_reset(d(2026, 10, 20), 1) == 11       # Oct 21..31
+    assert days_until_reset(d(2026, 10, 31), 1) == 0        # refills tomorrow
+    assert days_until_reset(d(2026, 11, 1), 1) == 29        # a fresh 30-day month
+    assert days_until_reset(d(2026, 11, 10), 15) == 4       # mid-month billing date
+    # One prop market + moneyline-only game lines: ~10.5 credits a day of essentials.
+    assert credits_to_hold_back(29, 1, 1) == 29 * 10.5
+    assert credits_to_hold_back(0, 12, 3) == 0
+
+
 def test_a_news_capped_player_does_not_soak_up_spare_minutes():
     roster = {i: _log(30, minutes=m) for i, m in enumerate([33, 32, 30, 28, 24, 20])}
     capped = project_team(roster, extra={5: Adjustment(0.7, dict.fromkeys(props.BASE_STATS, 0.7))})
     assert capped[5].minutes == pytest.approx(20 * 0.7, abs=0.1)
     assert capped[4].minutes > 24      # his teammates still do
+
+
+def test_stat_guide_brackets_the_projection_and_skips_the_bet_market():
+    proj = project(_log(30, minutes=32, pts=24, reb=8, ast=5))
+    guide = props.stat_guide(proj, "player_points_rebounds_assists")
+    assert set(guide) == {"pts", "reb", "ast"}
+    pts = guide["pts"]
+    assert pts["over_at"] < pts["proj"] < pts["under_at"]       # only bet away from the projection
+    assert proj.probs("player_points", pts["over_at"])[0] >= props.GUIDE_PROB
+    assert proj.probs("player_points", pts["over_at"] + 1)[0] < props.GUIDE_PROB   # the highest such line
+    assert proj.probs("player_points", pts["under_at"])[1] >= props.GUIDE_PROB
+    # The stat already bet is left out.
+    assert "pts" not in props.stat_guide(proj, "player_points")
+
+
+def test_stat_guide_has_no_over_line_for_a_stat_he_rarely_records():
+    proj = project(_log(30, minutes=20, pts=6, reb=2, ast=0) + _log(2, minutes=20, pts=6, reb=2, ast=1))
+    assert props.stat_guide(proj, "player_points")["ast"]["over_at"] is None

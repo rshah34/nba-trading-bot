@@ -15,10 +15,8 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     odds_api_key: str = ""
-    voyage_api_key: str = ""
 
     analysis_model: str = "claude-sonnet-5"
-    embedding_model: str = "voyage-3"
     # Reads the day's news into structured player signals (minutes limits, role
     # changes, absences). Extraction, not judgement, so the small model does it.
     news_model: str = "claude-haiku-5-5"
@@ -33,15 +31,18 @@ class Settings(BaseSettings):
     # Stop buying prop snapshots once the Odds API quota falls to this many credits,
     # so game lines (the CLV record) never get starved.
     odds_quota_reserve: int = 50
+    # Game-line markets per snapshot (one credit each). The moneyline alone is what
+    # bets and CLV use; spreads/totals only add reporting.
+    game_markets: str = "h2h,spreads,totals"
+    # Day of the month the Odds API quota refills — used to pace spending.
+    odds_quota_reset_day: int = 1
 
-    # Notifications: comma-separated channels from {imessage, ntfy}. Empty = log only.
-    notify_channels: str = ""
-    notify_imessage_to: str = ""       # phone number or Apple ID that receives the text
-    notify_ntfy_topic: str = ""        # ntfy.sh topic (treat it like a password)
-    notify_ntfy_server: str = "https://ntfy.sh"
+    # The most bets (game winners + props together) recorded and texted per day.
+    max_daily_bets: int = 3
+
+    # Phone number or Apple ID that gets the best-bets text. Empty = log only.
+    notify_imessage_to: str = ""
     bankroll: float = 0.0              # optional: shows stakes in dollars in the digest
-    # Also send the morning-after results. Off: they are still written to logs/.
-    notify_results: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property

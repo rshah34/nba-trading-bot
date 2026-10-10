@@ -4,7 +4,7 @@
 -- Player name is denormalized (the box score provides it), so no separate roster
 -- fetch is required.
 
-CREATE TABLE player_game_stats (
+CREATE TABLE IF NOT EXISTS player_game_stats (
     game_id      TEXT NOT NULL REFERENCES games(game_id),
     player_id    INTEGER NOT NULL,           -- nba_api player id
     player_name  TEXT NOT NULL,
@@ -27,5 +27,5 @@ CREATE TABLE player_game_stats (
 );
 
 -- Recent-form lookups filter by player + date, joining to games for game_date.
-CREATE INDEX idx_pgs_player ON player_game_stats(player_id);
-CREATE INDEX idx_pgs_team ON player_game_stats(team_id);
+CREATE INDEX IF NOT EXISTS idx_pgs_player ON player_game_stats(player_id);
+CREATE INDEX IF NOT EXISTS idx_pgs_team ON player_game_stats(team_id);

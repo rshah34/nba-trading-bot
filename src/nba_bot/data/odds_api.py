@@ -18,7 +18,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEY = "basketball_nba"
-DEFAULT_MARKETS = ("h2h", "spreads", "totals")
 
 _retry = retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 
@@ -49,7 +48,7 @@ class OddsEvent:
 @_retry
 def fetch_nba_odds(
     api_key: str,
-    markets: tuple[str, ...] = DEFAULT_MARKETS,
+    markets: tuple[str, ...],
     regions: str = "us",
     odds_format: str = "american",
 ) -> tuple[list[dict], dict[str, str | None]]:
@@ -141,15 +140,23 @@ class PropOffer:
 
 
 @_retry
-def fetch_events(api_key: str) -> list[dict]:
-    """Upcoming NBA events (id, teams, commence_time). Free — no quota cost."""
+def fetch_events(api_key: str) -> tuple[list[dict], dict[str, str | None]]:
+    """Upcoming NBA events (id, teams, commence_time) and the current quota.
+
+    Free — no quota cost — which makes it the way to read how many credits are
+    left before deciding what to buy.
+    """
     resp = httpx.get(
         f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events",
         params={"apiKey": api_key, "dateFormat": "iso"},
         timeout=20,
     )
     resp.raise_for_status()
-    return resp.json()
+    quota = {
+        "remaining": resp.headers.get("x-requests-remaining"),
+        "used": resp.headers.get("x-requests-used"),
+    }
+    return resp.json(), quota
 
 
 @_retry

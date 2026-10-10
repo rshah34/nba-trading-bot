@@ -9,5 +9,10 @@ ALTER TABLE predictions ALTER COLUMN as_of SET NOT NULL;
 
 -- Replace UNIQUE(game_id, model_version) with one that includes as_of.
 ALTER TABLE predictions DROP CONSTRAINT IF EXISTS predictions_game_id_model_version_key;
-ALTER TABLE predictions ADD CONSTRAINT predictions_game_model_asof_key
-    UNIQUE (game_id, model_version, as_of);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'predictions_game_model_asof_key') THEN
+        ALTER TABLE predictions ADD CONSTRAINT predictions_game_model_asof_key
+            UNIQUE (game_id, model_version, as_of);
+    END IF;
+END $$;

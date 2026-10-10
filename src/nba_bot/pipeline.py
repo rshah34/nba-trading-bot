@@ -4,13 +4,15 @@ Each step is isolated — a flaky nba_api / odds / Claude call is logged and the
 run continues, so an unattended scheduled job never dies on one bad step. Four
 phases follow the game-day timeline:
 
-* pregame  — morning: refresh data + news, capture game lines, predict, bet games.
-* props    — mid-afternoon: re-read injuries and news, price player props, bet,
-             and text the day's best bets. Later than the game bets on purpose:
-             props are won on knowing who plays, and that firms up through the day.
+* pregame  — morning: refresh data + news, predict today's games.
+* props    — mid-afternoon: re-read injuries and news, take current game and prop
+             prices, choose the day's few best bets across both, and text them.
+             Late on purpose: props are won on knowing who plays, which firms up
+             through the day, and the recorded price is the one on offer when the
+             text goes out.
 * close    — near tip: re-capture game lines and the prop markets we hold, which
              become the closing prices CLV is measured against.
-* postgame — next morning: results, settlement, and the results text.
+* postgame — next morning: results and settlement.
 """
 
 from __future__ import annotations
@@ -23,8 +25,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from nba_bot import digest, notify
-from nba_bot.config import settings
+from nba_bot import digest, notify, picks
 from nba_bot.agents import (
     analysis_agent,
     betting_agent,
@@ -34,7 +35,7 @@ from nba_bot.agents import (
     props_agent,
 )
 from nba_bot.db.models import REAL_GAMES, Game
-from nba_bot.rag import ingest as news_ingest
+from nba_bot.features.props import load_props_data
 
 log = logging.getLogger("nba_bot.pipeline")
 
@@ -85,38 +86,29 @@ def _slate_teams(session: Session, on: date, window_hours: float | None = None) 
 
 
 def _send_best_bets(session: Session, on: date) -> dict:
-    return {"sent": True, "channels": notify.send(digest.best_bets(session, on), "NBA best bets")}
-
-
-def _send_results(session: Session) -> dict:
-    """Results always land in logs/results-<date>.txt; they are texted only on request."""
-    text = digest.results(session)
-    if text is None:
-        return {"sent": False, "reason": "nothing settled"}
-    channels = notify.send(text, "NBA results", kind="results",
-                           deliver=settings.notify_results)
-    return {"sent": settings.notify_results, "channels": channels}
+    return {"text": notify.send(digest.best_bets(session, on))}
 
 
 def run_pregame(session: Session, on: date | None = None) -> dict:
-    """Morning: refresh data + injuries + results + news, capture odds, predict, bet games."""
+    """Morning: refresh data + injuries + results + news, and predict today's games.
+    Nothing is bet here — the picks are made in the afternoon, at the prices then."""
     on = on or date.today()
-    return {
+    steps = {
         "ingest": _step("ingest", lambda: data_agent.run_nightly(session)),
-        "news": _step("news", lambda: news_ingest.sync_news(session)),
-        "odds": _step("ingest-odds", lambda: data_agent.sync_odds(session)),
-        "predict": _step(
-            "predict",
-            lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)],
-        ),
-        # Size paper bets where the calibrated prob disagrees with the current market.
-        "bets": _step("record-bets", lambda: betting_agent.record_bets(session, on)),
+        "news": _step("news", lambda: news_agent.sync_news(session)),
     }
+    teams = _slate_teams(session, on)
+    if teams:  # no games today: nothing to read the news for, nothing to predict
+        steps["signals"] = _step(
+            "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams))
+        steps["predict"] = _step(
+            "predict", lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)])
+    return steps
 
 
 def run_props(session: Session, on: date | None = None,
               window_hours: float | None = None) -> dict:
-    """Freshest availability → price player props → bet → text.
+    """Freshest availability → current game + prop prices → the day's picks → text.
 
     `window_hours` limits the run to games tipping that soon: the early run that
     covers afternoon tips the main run would be too late for.
@@ -127,38 +119,55 @@ def run_props(session: Session, on: date | None = None,
         # Nothing to price: don't fetch odds or pay a model to read news nobody will use.
         return {"slate": {"ok": True, "result": "no games to price in this window"}}
 
-    def bets() -> dict:
-        result = props_agent.record_prop_bets(session, on, window_hours=window_hours)
-        result["bets"] = [f"{b['player_name']} {b['decision'].side} {b['decision'].line:g} "
-                          f"{b['market']}" for b in result["bets"]]
+    data = load_props_data(session)  # one read of the box-score history for the whole phase
+
+    def choose() -> dict:
+        result = picks.make_picks(session, on, data=data, window_hours=window_hours)
+        result["picks"] = [digest.pick_label(c) for c in result["picks"]]
         return result
 
     return {
         "injuries": _step("injuries", lambda: data_agent.sync_injuries(session)),
-        "news": _step("news", lambda: news_ingest.sync_news(session)),
+        "news": _step("news", lambda: news_agent.sync_news(session)),
         "signals": _step(
             "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams)),
+        "odds": _step("ingest-odds", lambda: data_agent.sync_odds(session)),
         "prop_odds": _step("prop-odds", lambda: props_agent.sync_prop_odds(
-            session, window_hours=window_hours or 20)),
-        "prop_bets": _step("prop-bets", bets),
+            session, data=data, window_hours=window_hours or 20)),
+        "picks": _step("picks", choose),
         "notify": _step("notify", lambda: _send_best_bets(session, on)),
     }
 
 
-def run_close(session: Session) -> dict:
+def _game_odds(session: Session, on: date) -> dict:
+    """Game-line snapshot — skipped on a day with nothing left to play, when it
+    would spend credits pricing games we aren't betting."""
+    if not _slate_teams(session, on):
+        return {"skipped": "no games left today"}
+    return data_agent.sync_odds(session)
+
+
+# Each close run prices only the games tipping soon, so with runs three hours apart
+# every game is bought once, by the run nearest its tip.
+_CLOSE_WINDOW_HOURS = 3.25
+
+
+def run_close(session: Session, on: date | None = None) -> dict:
     """Near tip: the snapshots that become the closing prices. Cheap — game lines
     are one request, and props re-price only the markets we hold bets in."""
+    on = on or date.today()
     return {
-        "odds": _step("ingest-odds", lambda: data_agent.sync_odds(session)),
+        "odds": _step("ingest-odds", lambda: _game_odds(session, on)),
         "prop_odds": _step(
-            "prop-odds", lambda: props_agent.sync_prop_odds(session, only_open_bets=True)
+            "prop-odds", lambda: props_agent.sync_prop_odds(
+                session, only_open_bets=True, window_hours=_CLOSE_WINDOW_HOURS)
         ),
     }
 
 
 def run_postgame(session: Session) -> dict:
     """After games resolve: refresh final results + box/player stats, mark the
-    closing line, score the newly-resolved predictions, settle, and text results.
+    closing line, score the newly-resolved predictions, and settle the bets.
     """
     return {
         "ingest": _step("ingest", lambda: data_agent.run_nightly(session)),
@@ -167,5 +176,4 @@ def run_postgame(session: Session) -> dict:
         # Settle paper bets: CLV vs. the closing line + P&L on the outcome.
         "settle_bets": _step("settle-bets", lambda: betting_agent.settle_bets(session)),
         "settle_props": _step("settle-props", lambda: props_agent.settle_prop_bets(session)),
-        "notify": _step("notify", lambda: _send_results(session)),
     }

@@ -7,9 +7,7 @@ What this can and can't tell you:
   60% of the time?). Those are the properties sizing a bet depends on.
 * It CANNOT measure edge against a sportsbook — no historical prop lines exist for
   free. The "line" used here is the player's own trailing-10 average, which is a far
-  softer opponent than a real book. The simulated ROI against it is a sanity check
-  on the machinery, never a forecast of real returns. Real edge is only visible live,
-  through CLV.
+  softer opponent than a real book. Real edge is only visible live, through CLV.
 
 The minutes-budget feature needs to know who is available, which no historical
 injury report can tell us. `availability` brackets it:
@@ -54,9 +52,6 @@ class MarketStats:
     sum_mean: float = 0.0
     brier: float = 0.0
     brier_naive: float = 0.0
-    log_loss: float = 0.0
-    bets: int = 0
-    wins: int = 0
     bins: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0.0, 0]))
 
     def summary(self) -> dict:
@@ -71,12 +66,6 @@ class MarketStats:
             "phi": round(self.sq_err / self.sum_mean, 2) if self.sum_mean else None,
             "brier": round(self.brier / n, 4),
             "brier_naive": round(self.brier_naive / n, 4),
-            "log_loss": round(self.log_loss / n, 4),
-            "bets": self.bets,
-            "hit_rate": round(self.wins / self.bets, 3) if self.bets else None,
-            # ROI at -110 against the trailing-average "line" — a strawman book.
-            "roi_vs_naive_line": round((self.wins * (100 / 110) - (self.bets - self.wins))
-                                       / self.bets, 3) if self.bets else None,
         }
 
 
@@ -103,7 +92,6 @@ def run_backtest(
     use_opponent: bool = True,
     availability: str = "oracle",
     min_minutes: float = 15.0,
-    bet_threshold: float = 0.05,
     start: date | None = None,
 ) -> dict[str, MarketStats]:
     """Project every rotation player in every game of a season and score it."""
@@ -148,12 +136,11 @@ def run_backtest(
                 proj = projections.get(pid)
                 if proj is None or proj.minutes < min_minutes:
                     continue
-                _score(stats, proj, logs[pid], data.logs[pid][idx], season, bet_threshold)
+                _score(stats, proj, logs[pid], data.logs[pid][idx], season)
     return stats
 
 
-def _score(stats, proj, prior: list[GameLine], actual_line: GameLine, season: str,
-           bet_threshold: float) -> None:
+def _score(stats, proj, prior: list[GameLine], actual_line: GameLine, season: str) -> None:
     last10 = prior[-10:]
     this_season = [g for g in prior if g.season == season] or prior
     for market in MARKETS:
@@ -177,7 +164,6 @@ def _score(stats, proj, prior: list[GameLine], actual_line: GameLine, season: st
         p_naive = min(max(over_under_probs(l10, proj.phis[market], line)[0], 1e-4), 1 - 1e-4)
         st.brier += (p - over) ** 2
         st.brier_naive += (p_naive - over) ** 2
-        st.log_loss += -math.log(p if over else 1 - p)
         for lo, hi in _BINS:
             if lo <= p < hi:
                 b = st.bins[(lo, hi)]
@@ -185,6 +171,3 @@ def _score(stats, proj, prior: list[GameLine], actual_line: GameLine, season: st
                 b[1] += p
                 b[2] += int(over)
                 break
-        if abs(p - 0.5) >= bet_threshold:
-            st.bets += 1
-            st.wins += int(over == (p > 0.5))

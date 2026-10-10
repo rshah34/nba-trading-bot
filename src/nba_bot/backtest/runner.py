@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nba_bot.agents import analysis_agent, evaluation_agent
-from nba_bot.backtest import loader, report
+from nba_bot.backtest import report
 from nba_bot.config import settings
 from nba_bot.db.engine import SessionLocal
 from nba_bot.db.models import Game
@@ -65,12 +65,6 @@ def estimate_cost(session: Session, games: list[Game], model: str, client: anthr
         "home_b2b": home.is_back_to_back_home, "away_b2b": home.is_back_to_back_away,
         "home_form": {"games": 10, "wins": 6, "losses": 4, "avg_margin": 2.0},
         "away_form": {"games": 10, "wins": 5, "losses": 5, "avg_margin": -1.0},
-        "home_ff": {"games": 10, "pace": 99.5, "efg": 0.55, "tov_pct": 0.13, "oreb_pct": 0.28,
-                    "ft_rate": 0.25, "def_efg": 0.53, "def_tov_pct": 0.14, "dreb_pct": 0.73,
-                    "def_ft_rate": 0.24},
-        "away_ff": {"games": 10, "pace": 98.0, "efg": 0.53, "tov_pct": 0.14, "oreb_pct": 0.26,
-                    "ft_rate": 0.24, "def_efg": 0.55, "def_tov_pct": 0.12, "dreb_pct": 0.71,
-                    "def_ft_rate": 0.26},
         "home_players": [{"name": "Player One", "ppg": 26.0, "rpg": 7.0, "apg": 6.0}] * 4,
         "away_players": [{"name": "Player Two", "ppg": 24.0, "rpg": 8.0, "apg": 5.0}] * 4,
         "home_injuries": [], "away_injuries": [], "news": "",
@@ -96,8 +90,6 @@ def predict_and_evaluate(
     model: str,
     model_version: str,
     client: anthropic.Anthropic | None = None,
-    oracle_injuries: bool = False,
-    use_matchup_features: bool = True,
     concurrency: int = 8,
 ) -> dict:
     """Predict each game point-in-time, score them, and return the report. Spends API credits.
@@ -106,13 +98,6 @@ def predict_and_evaluate(
     since a Session isn't thread-safe; the Anthropic client is shared (it is). Per-game
     failures are isolated so one bad game doesn't abort the run — the report's `failed`
     count reflects them. Concurrency turns a ~1hr sequential 300-game run into minutes.
-
-    oracle_injuries=True measures the on-off feature's CEILING by deriving availability
-    from each game's own box score — optimistic and mildly look-ahead, never a real
-    track record. Tag such runs distinctly.
-
-    use_matchup_features=False runs the champion prompt (no Four Factors / on-off) for a
-    clean A/B baseline on the same slice.
     """
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
     jobs = [(g.game_id, g.game_date) for g in games]  # detach from the outer session
@@ -123,8 +108,7 @@ def predict_and_evaluate(
         with SessionLocal() as s:  # per-thread session
             analysis_agent.predict_game(
                 s, game_id, as_of=as_of, model_version=model_version,
-                client=client, model=model, use_news=False, oracle_injuries=oracle_injuries,
-                use_matchup_features=use_matchup_features,
+                client=client, model=model,
             )
 
     failed = 0
@@ -149,19 +133,3 @@ def predict_and_evaluate(
     rep = report.build_report(session, model_version)
     rep["failed"] = failed
     return rep
-
-
-def run_backtest(
-    session: Session,
-    season: str = "2025-26",
-    limit: int = 30,
-    model: str = "claude-haiku-4-5",
-    season_slice: str = "start",
-) -> dict:
-    """Load the season, predict `limit` games, evaluate, and return the report."""
-    load_result = loader.load_season(session, season)
-    games = _backtest_games(session, season, limit, season_slice)
-    rep = predict_and_evaluate(
-        session, games, model, model_version_for(season, model, season_slice)
-    )
-    return {"loaded": load_result, "report": rep}

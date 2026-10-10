@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nba_bot.agents import betting_agent, props_agent
 from nba_bot.config import settings
 from nba_bot.db.models import Bet, Game, PropBet, Team
-from nba_bot.features.props import MARKET_LABELS
+from nba_bot.features.props import GUIDE_STATS, MARKET_LABELS
 
 _BOOKS = {"draftkings": "DK", "fanduel": "FD", "betmgm": "MGM", "williamhill_us": "Caesars",
           "espnbet": "ESPN", "betrivers": "Rivers", "fanatics": "Fanatics", "bovada": "Bovada",
@@ -40,54 +39,80 @@ def _teams(session: Session) -> dict[int, str]:
     return {t.team_id: t.abbreviation for t in session.execute(select(Team)).scalars()}
 
 
+def pick_label(candidate: dict) -> str:
+    """One-line description of a pick, for run logs."""
+    d = candidate["decision"]
+    if candidate["kind"] == "game":
+        return f"game {candidate['game_id']} {d.side} ML"
+    return (f"{candidate['player_name']} {d.side} {d.line:g} "
+            f"{MARKET_LABELS.get(candidate['market'], candidate['market'])}")
+
+
 def best_bets(session: Session, game_date: date) -> str:
-    """The pre-game text: every bet recorded for a date, best first."""
+    """The pre-game text: the day's picks — game winners and props together — with
+    the biggest edge first."""
     teams = _teams(session)
     props = props_agent.todays_bets(session, game_date)
-    games = session.execute(
+    game_bets = session.execute(
         select(Bet, Game).join(Game, Bet.game_id == Game.game_id)
-        .where(Game.game_date == game_date).order_by(Bet.edge.desc())
+        .where(Game.game_date == game_date)
     ).all()
+    tips = dict(session.execute(
+        select(Game.game_id, Game.tipoff_at).where(Game.game_date == game_date)
+    ).all())
 
     lines = [f"NBA best bets, {game_date:%a %b %-d}"]
-    if not props and not games:
+    if not props and not game_bets:
         lines.append("No bets today: nothing cleared the edge threshold.")
         return "\n".join(lines)
 
-    if props:
-        tips = dict(session.execute(
-            select(Game.game_id, Game.tipoff_at).where(Game.game_date == game_date)
-        ).all())
-        lines.append(f"\nPROPS ({len(props)})")
-        for i, b in enumerate(props, 1):
-            book = _BOOKS.get(b.sportsbook, b.sportsbook)
-            lines.append(
-                f"{i}. {b.player_name} ({teams.get(b.team_id, '?')}) {b.side.upper()} "
-                f"{float(b.line):g} {MARKET_LABELS.get(b.market, b.market)} "
-                f"{_american(float(b.decimal_odds))} {book}"
-            )
-            when = _local_time(tips.get(b.game_id))
-            lines.append(
-                f"   proj {float(b.proj_mean):.1f} in {float(b.proj_minutes or 0):.0f}m | "
-                f"model {float(b.model_prob):.0%}, mkt {float(b.market_prob):.0%}, "
-                f"edge {float(b.edge):+.1%} | EV {float(b.ev):+.1%} | "
-                f"{_stake(float(b.stake_fraction))}" + (f" | tip {when}" if when else "")
-            )
-            if b.notes:
-                lines.append(f"   {b.notes}")
+    def tail(model: float, market: float, edge: float, stake: float, game_id: str) -> str:
+        when = _local_time(tips.get(game_id))
+        return (f"model {model:.0%}, mkt {market:.0%}, edge {edge:+.1%} | {_stake(stake)}"
+                + (f" | tip {when}" if when else ""))
 
-    if games:
-        lines.append(f"\nGAMES ({len(games)})")
-        for bet, game in games:
-            side = game.home_team_id if bet.side == "home" else game.away_team_id
-            lines.append(
-                f"- {teams.get(side, '?')} ML {_american(float(bet.decimal_odds))} "
-                f"({teams.get(game.away_team_id, '?')} @ {teams.get(game.home_team_id, '?')}) | "
-                f"model {float(bet.model_prob):.0%} vs mkt {float(bet.market_prob):.0%} | "
-                f"{_stake(float(bet.stake_fraction))}"
-            )
+    entries: list[tuple[float, list[str]]] = []
+    for b in props:
+        book = _BOOKS.get(b.sportsbook, b.sportsbook)
+        block = [
+            f"{b.player_name} ({teams.get(b.team_id, '?')}) {b.side.upper()} {float(b.line):g} "
+            f"{MARKET_LABELS.get(b.market, b.market)} {_american(float(b.decimal_odds))} {book}",
+            f"   proj {float(b.proj_mean):.1f} in {float(b.proj_minutes or 0):.0f}m | "
+            + tail(float(b.model_prob), float(b.market_prob), float(b.edge),
+                   float(b.stake_fraction), b.game_id),
+        ]
+        if b.notes:
+            block.append(f"   {b.notes}")
+        if b.stat_guide:
+            def bound(v) -> str:
+                return f"{v:g}" if v is not None else "–"
 
-    total = sum(float(b.stake_fraction) for b in props) + sum(float(b.stake_fraction) for b, _ in games)
+            block.append("   single stats (over if the line is at or below / under if at or above):")
+            # In a fixed order: a JSON column doesn't keep the order it was written in.
+            block.append("   " + " · ".join(
+                f"{stat.upper()} {bound(b.stat_guide[stat]['over_at'])} / "
+                f"{bound(b.stat_guide[stat]['under_at'])}"
+                for stat, _market in GUIDE_STATS if stat in b.stat_guide))
+        entries.append((float(b.edge), block))
+    for bet, game in game_bets:
+        side, other = ((game.home_team_id, game.away_team_id) if bet.side == "home"
+                       else (game.away_team_id, game.home_team_id))
+        where = "vs" if bet.side == "home" else "at"
+        entries.append((float(bet.edge), [
+            f"{teams.get(side, '?')} to win {where} {teams.get(other, '?')} "
+            f"{_american(float(bet.decimal_odds))} (avg price, shop for better)",
+            "   " + tail(float(bet.model_prob), float(bet.market_prob), float(bet.edge),
+                         float(bet.stake_fraction), bet.game_id),
+        ]))
+
+    entries.sort(key=lambda e: e[0], reverse=True)
+    for i, (_edge, block) in enumerate(entries, 1):
+        lines.append("")
+        lines.append(f"{i}. {block[0]}")
+        lines.extend(block[1:])
+
+    total = sum(float(b.stake_fraction) for b in props) + sum(
+        float(b.stake_fraction) for b, _ in game_bets)
     lines.append(f"\nTotal at risk: {_stake(total)}. Paper trading: verify the price before betting.")
     return "\n".join(lines)
 
@@ -103,8 +128,12 @@ def results(session: Session, since_hours: int = 30) -> str | None:
         return None
 
     teams = _teams(session)
-    yesterday = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=1)).date()
-    lines = [f"NBA results, {yesterday:%a %b %-d}"]
+    # Dated by the games themselves: settlement can run a day or more late.
+    game_ids = {b.game_id for b in props} | {b.game_id for b in games}
+    played = session.execute(
+        select(func.max(Game.game_date)).where(Game.game_id.in_(game_ids))
+    ).scalar_one()
+    lines = [f"NBA results, {played:%a %b %-d}"]
     marks = {"won": "W", "lost": "L", "push": "P", "void": "VOID"}
     night = 0.0
     for b in props:
@@ -116,10 +145,19 @@ def results(session: Session, since_hours: int = 30) -> str | None:
             f"{b.side} {float(b.line):g} {MARKET_LABELS.get(b.market, b.market)}: {actual} "
             f"({float(b.pnl or 0) * 100:+.2f}u{clv})"
         )
+    matchups = {g.game_id: g for g in session.execute(
+        select(Game).where(Game.game_id.in_(game_ids))).scalars()}
     for b in games:
         night += float(b.pnl or 0)
+        g = matchups[b.game_id]
+        side, other = ((g.home_team_id, g.away_team_id) if b.side == "home"
+                       else (g.away_team_id, g.home_team_id))
         clv = f" | CLV {float(b.clv) * 100:+.1f}pts" if b.clv is not None else ""
-        lines.append(f"{'W' if b.won else 'L'} game ML {b.side} ({float(b.pnl or 0) * 100:+.2f}u{clv})")
+        lines.append(
+            f"{'W' if b.won else 'L'} {teams.get(side, '?')} to win "
+            f"{'vs' if b.side == 'home' else 'at'} {teams.get(other, '?')} "
+            f"({float(b.pnl or 0) * 100:+.2f}u{clv})"
+        )
     lines.append(f"\nNight: {night * 100:+.2f}u")
 
     rec = props_agent.track_record(session)

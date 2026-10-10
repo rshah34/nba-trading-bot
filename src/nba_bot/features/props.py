@@ -35,6 +35,8 @@ and never sees a betting line.
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -116,6 +118,20 @@ _BUDGET_CLIP = (0.75, 1.4)
 _ROLE_ANCHORS = (19.5, 27.0, 33.0)            # bench, mid-rotation, starter
 _BETA_MINUTES = {"down": (0.9, 0.6, 0.4), "up": (0.7, 0.25, 0.0)}
 _BETA_STATS = {"down": (1.0, 0.8, 0.5), "up": (1.0, 0.45, 0.3)}
+
+
+_SUFFIXES = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b\.?")
+
+
+def normalize_name(name: str) -> str:
+    """Fold a player name so sportsbook, injury-report and box-score spellings match.
+
+    Strips accents (Dončić -> doncic), suffixes (Jr./III), and punctuation.
+    """
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    s = _SUFFIXES.sub("", s.lower())
+    s = re.sub(r"[^a-z ]", "", s)
+    return " ".join(s.split())
 
 
 @dataclass(frozen=True)
@@ -225,6 +241,32 @@ def over_under_probs(mean: float, phi: float, line: float) -> tuple[float, float
         push = 0.0
         under = sum(pmf[: top + 1]) if top >= 0 else 0.0
     return max(0.0, 1.0 - under - push), under, push
+
+
+# Single-stat guidance. The bot may only have a line for a combo market (one market
+# is all the free odds plan buys), but the projection covers every stat. For each of
+# these it reports the lines at which the model alone makes the over, or the under,
+# at least GUIDE_PROB likely — for the bettor to compare with what their book hangs.
+GUIDE_STATS = (("pts", "player_points"), ("reb", "player_rebounds"), ("ast", "player_assists"))
+GUIDE_PROB = 0.57   # comfortably above the ~53.5% a -115 price needs to break even
+
+
+def stat_guide(proj: Projection, bet_market: str) -> dict[str, dict]:
+    """{stat: {proj, over_at, under_at}} — take the over if the book's line is
+    `over_at` or lower, the under if it is `under_at` or higher. A bound is None
+    when no half-point line clears GUIDE_PROB. Raw model: with no line to compare
+    against there is no market blend and no second book behind these."""
+    guide = {}
+    for stat, market in GUIDE_STATS:
+        if market == bet_market:
+            continue
+        mean, phi = proj.means[stat], proj.phis[market]
+        lines = [k + 0.5 for k in range(80)]
+        overs = [ln for ln in lines if over_under_probs(mean, phi, ln)[0] >= GUIDE_PROB]
+        unders = [ln for ln in lines if over_under_probs(mean, phi, ln)[1] >= GUIDE_PROB]
+        guide[stat] = {"proj": round(mean, 1), "over_at": max(overs, default=None),
+                       "under_at": min(unders, default=None)}
+    return guide
 
 
 # --------------------------------------------------------------------------- #
@@ -425,11 +467,23 @@ class PropsData:
     logs: dict[int, list[GameLine]]                 # player -> chronological real games played
     names: dict[int, str]
     current_team: dict[int, int]                    # latest team, preseason included
+    last_seen: dict[int, date]                      # latest appearance, preseason included
     team_games: dict[int, list[GameInfo]]           # team -> chronological real games
     team_box: dict[tuple[str, int], dict[str, float]]  # (game, team) -> stat totals
     # Average preseason minutes in the newest season: the only read on the role of a
     # player with no regular-season history (rookies).
     exhibition_minutes: dict[int, float] = field(default_factory=dict)
+    _name_index: dict[str, list[int]] | None = field(default=None, repr=False)
+
+    def name_index(self) -> dict[str, list[int]]:
+        """Normalized name -> player ids, for matching sportsbook and injury-report
+        names (two players can share one). Built on first use."""
+        if self._name_index is None:
+            index: dict[str, list[int]] = defaultdict(list)
+            for pid, name in self.names.items():
+                index[normalize_name(name)].append(pid)
+            self._name_index = dict(index)
+        return self._name_index
 
     def log_before(self, player_id: int, as_of: date) -> list[GameLine]:
         return [g for g in self.logs.get(player_id, []) if g.game_date < as_of]
@@ -531,6 +585,7 @@ def load_props_data(session: Session) -> PropsData:
         logs=dict(logs),
         names=names,
         current_team={pid: team for pid, (_d, team) in latest.items()},
+        last_seen={pid: seen for pid, (seen, _team) in latest.items()},
         team_games=dict(team_games),
         team_box=team_box,
         exhibition_minutes={pid: sum(m) / len(m) for pid, m in exhibition.items()},

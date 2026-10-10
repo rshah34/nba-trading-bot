@@ -4,8 +4,8 @@ Four phases, each one CLI command. Every step inside a phase is fault-isolated (
 
 | Phase | Command | What it does |
 |-------|---------|--------------|
-| pregame | `nba-bot daily-pregame` | ingest games/results/injuries + news → game odds → predict → **bet games** |
-| props | `nba-bot daily-props` | re-read injuries + news → player signals → prop odds → **bet props** → **text the best bets** |
+| pregame | `nba-bot daily-pregame` | ingest games/results/injuries + news → player signals → Claude predicts each game |
+| props | `nba-bot daily-props` | re-read injuries + news → player signals → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
 | close | `nba-bot daily-close` | re-capture game lines + the prop markets we hold → these become the **closing prices** |
 | postgame | `nba-bot daily-postgame` | final scores + box scores → mark closing → evaluate → **settle** (CLV + P&L) |
 
@@ -26,12 +26,12 @@ Five jobs, at **local machine time** (defaults assume a **Pacific** machine):
 | Job | Default (PT) | Runs | Why then |
 |-----|--------------|------|----------|
 | postgame | 09:00 | `daily-postgame` | every game from last night is final; settles the bets |
-| pregame | 10:00 | `daily-pregame` | bet game lines early so they have hours to move before the close |
+| pregame | 10:00 | `daily-pregame` | game predictions ready well before the picks are made |
 | props-early | 10:45 | `daily-props --window-hours 4.25` | only games tipping before ~3pm PT (weekend/holiday matinees); a no-op otherwise |
 | props | 14:30 | `daily-props` | ~90 min before the first evening tips; **the best-bets text** |
 | close | 15:30 and 18:30 | `daily-close` | before the eastern and the western tips — the closing prices |
 
-**Why game bets go early and prop bets go late.** They win for different reasons. A game line is efficient all day, so the only thing to capture is movement: bet early, measure against the close. A prop is won on knowing who plays and for how long, and that information arrives through the day as injury reports firm up. The backtest is blunt about it: with the right availability the projections improve sharply, but with *stale* availability they are worse than using none at all. So props wait.
+**The picks.** Each day the bot records and texts at most `MAX_DAILY_BETS` bets (default 3), chosen across game winners and player props by edge — the probability it would size on, minus the market's. When both kinds qualify, the best of each is included. They are chosen in the afternoon run because props are won on knowing who plays, which firms up through the day (with *stale* availability the projections are worse than with none), and because the price recorded is then the one on offer when the text reaches you. The early run may use one of the day's picks on an afternoon game.
 
 **Why the close is its own run.** CLV — did you get a better number than the close — only exists if the bet and the close are different snapshots. Merge them and CLV is always ~0, which guts the metric the whole system is scored on.
 
@@ -43,28 +43,26 @@ A sleeping Mac runs nothing. launchd fires every missed job once, all together, 
 
 What a late run can and can't recover:
 
-- **Results** — always. The results text simply arrives when the Mac wakes.
+- **Results and settlement** — always, just later.
 - **Bets** — only on games that haven't tipped yet. Wake up after tip and that game is skipped.
 - **Closing prices** — only if a `close` run lands between the bet and the tip; otherwise that bet has no CLV.
 
 To have the runs happen on time with nobody at the keyboard, the Mac has to stay awake through the afternoon: leave it **plugged in with the lid open** and turn on System Settings → Battery → Options → *Prevent automatic sleeping on power adapter when the display is off* (the display still sleeps). A closed lid sleeps the Mac regardless.
 
-If the laptop is usually out of the house or shut in the afternoon, this needs an always-on machine on a home connection instead — any spare computer or a Raspberry Pi running the same Docker + cron setup, with `ntfy` for the texts. A cloud server is not a drop-in: NBA's data endpoints refuse datacenter addresses.
+If the laptop is usually out of the house or shut in the afternoon, this needs an always-on machine on a home connection instead — any spare Mac running the same setup (the texts go through Messages, so it has to be a Mac). A cloud server is not a drop-in: NBA's data endpoints refuse datacenter addresses.
 
 ## Getting the texts
 
 Set these in `.env`, then run `nba-bot notify-test`:
 
 ```bash
-NOTIFY_CHANNELS=imessage            # and/or ntfy
 NOTIFY_IMESSAGE_TO=+15551234567     # your own number or Apple ID
 BANKROLL=2000                       # optional: shows stakes in dollars too
 ```
 
-- **imessage** sends a real text through the Messages app on this Mac — no SMS provider, no cost. The first send triggers a one-time macOS prompt to let the terminal control Messages; accept it. Run `notify-test` once from a terminal *and* check the first scheduled run's log, because launchd may ask for the same permission separately.
-- **ntfy** is a push notification via [ntfy.sh](https://ntfy.sh): install the app, subscribe to a topic, and set `NOTIFY_NTFY_TOPIC` to the same name. Anyone who knows the topic can read it, so make it long and random. It is the more dependable channel under launchd, and worth enabling alongside iMessage.
+The bot sends one kind of text: the day's best bets (or "No bets today", so silence means it didn't run). It goes out as an iMessage through the Messages app on this Mac — no SMS provider, no cost. The first send triggers a one-time macOS prompt to let the terminal control Messages; accept it.
 
-Only the best-bets text is sent. Results are written to `logs/results-<date>.txt` each morning and shown by `nba-bot digest --results`; set `NOTIFY_RESULTS=true` to have them texted too. Every digest is also written to `logs/digest-<date>.txt`, so a failed send loses nothing. Preview one any time with `nba-bot digest` (add `--send` to deliver it).
+Every digest is also written to `logs/digest-<date>.txt`, so a failed send loses nothing. `nba-bot digest` previews today's text (`--send` delivers it) and `nba-bot digest --results` shows how last night's bets finished.
 
 ## Claude API cost
 
@@ -72,22 +70,28 @@ Two things call Claude, and both are logged per call to `logs/api-usage.jsonl` (
 
 | Call | When | Model | Measured cost |
 |------|------|-------|---------------|
-| Game prediction | once per game per day (`pregame`) | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.012 a game, so ~$0.10 on a full night |
-| News reading | new articles about teams playing today (`props`) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
+| Game prediction | once per game per day (`pregame`) | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.01 a game, so under $0.10 on a full night |
+| News reading | new articles about teams playing today (`pregame` and `props`; each article once) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
 
 Nothing is paid for twice: a game already predicted today is skipped on a re-run, each article is read once, and on a day with no games the props phase does nothing at all. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
 
 ## Odds API budget
 
-Game lines are 3 credits a snapshot. Props are the expensive part: **one credit per market per game per snapshot**.
+Game lines cost one credit per market per snapshot. Props cost **one credit per market per game**, which is what makes them expensive.
 
-| Setup | Credits / month (≈7.5 games a night) |
-|-------|--------------------------------------|
-| game lines only, 3 snapshots/day | ~270 |
-| + 4 prop markets | ~1,400 |
-| + all 12 prop markets | ~3,500 |
+**On the free plan (500 credits/month)** — the shipped `.env.example` settings:
 
-The free tier (500/month) covers game lines but only a few nights of props, so props need the paid tier. `PROP_MARKETS` in `.env` trims the list, `ODDS_QUOTA_RESERVE` stops prop snapshots before the quota runs dry so game lines always get through, and the closing snapshot only re-prices markets you hold bets in.
+| Purchase | Setting | Credits / month (≈7.5 games a night) |
+|----------|---------|--------------------------------------|
+| Game lines, moneyline only, 3 snapshots a day | `GAME_MARKETS=h2h` | ~90 |
+| Props, one market, one snapshot per game | `PROP_MARKETS=player_points_rebounds_assists` | ~225 |
+| Closing prices for the prop bets held | automatic | whatever is left, ~100–135 |
+
+One prop market is the most the free plan holds; a second would take ~450 on its own. Points+rebounds+assists is the one to keep: it covers the three main stats for one credit, and it is where the model beat the naive baseline by the most in the season backtest.
+
+The bot paces itself so the month never runs dry: each game is bought once, no game lines are bought on a day with nothing to play, and the closing snapshot — the only optional purchase — runs only while the rest of the month's essentials are still covered. If credits get tight you lose CLV on some prop bets, never the bets themselves. `ODDS_QUOTA_RESERVE` is a last-resort floor that keeps game lines alive.
+
+**On a paid plan**, unset `PROP_MARKETS` and `GAME_MARKETS` to price all 12 prop markets and spreads/totals: about 3,500 credits a month.
 
 ## Monitoring
 

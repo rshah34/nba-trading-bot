@@ -1,9 +1,7 @@
 -- Initial schema for nba-trading-bot
 -- Applied automatically on first container start via docker-entrypoint-initdb.d
 
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
     team_id     INTEGER PRIMARY KEY,        -- nba_api team id
     abbreviation TEXT NOT NULL,
     full_name   TEXT NOT NULL,
@@ -11,7 +9,7 @@ CREATE TABLE teams (
     division    TEXT
 );
 
-CREATE TABLE games (
+CREATE TABLE IF NOT EXISTS games (
     game_id         TEXT PRIMARY KEY,       -- nba_api game id
     season          TEXT NOT NULL,          -- e.g. '2023-24'
     game_date       DATE NOT NULL,
@@ -26,9 +24,9 @@ CREATE TABLE games (
     is_back_to_back_away BOOLEAN DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_games_date ON games(game_date);
+CREATE INDEX IF NOT EXISTS idx_games_date ON games(game_date);
 
-CREATE TABLE team_game_stats (
+CREATE TABLE IF NOT EXISTS team_game_stats (
     game_id     TEXT NOT NULL REFERENCES games(game_id),
     team_id     INTEGER NOT NULL REFERENCES teams(team_id),
     points      INTEGER,
@@ -42,7 +40,7 @@ CREATE TABLE team_game_stats (
     PRIMARY KEY (game_id, team_id)
 );
 
-CREATE TABLE injuries (
+CREATE TABLE IF NOT EXISTS injuries (
     id          SERIAL PRIMARY KEY,
     team_id     INTEGER NOT NULL REFERENCES teams(team_id),
     player_name TEXT NOT NULL,
@@ -50,9 +48,9 @@ CREATE TABLE injuries (
     reason      TEXT,
     reported_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_injuries_team ON injuries(team_id, reported_at DESC);
+CREATE INDEX IF NOT EXISTS idx_injuries_team ON injuries(team_id, reported_at DESC);
 
-CREATE TABLE odds (
+CREATE TABLE IF NOT EXISTS odds (
     id              SERIAL PRIMARY KEY,
     game_id         TEXT NOT NULL REFERENCES games(game_id),
     sportsbook      TEXT NOT NULL,
@@ -67,9 +65,9 @@ CREATE TABLE odds (
     captured_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     is_closing_line BOOLEAN NOT NULL DEFAULT FALSE
 );
-CREATE INDEX idx_odds_game ON odds(game_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_odds_game ON odds(game_id, captured_at DESC);
 
-CREATE TABLE news_articles (
+CREATE TABLE IF NOT EXISTS news_articles (
     id          SERIAL PRIMARY KEY,
     source      TEXT NOT NULL,
     url         TEXT UNIQUE NOT NULL,
@@ -80,18 +78,7 @@ CREATE TABLE news_articles (
     fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Embedding dimension matches the embedding model configured in settings
--- (default: Voyage voyage-3, 1024 dims). Change dim + migrate if you switch models.
-CREATE TABLE news_chunks (
-    id          SERIAL PRIMARY KEY,
-    article_id  INTEGER NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
-    chunk_text  TEXT NOT NULL,
-    embedding   vector(1024),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_news_chunks_embedding ON news_chunks USING hnsw (embedding vector_cosine_ops);
-
-CREATE TABLE predictions (
+CREATE TABLE IF NOT EXISTS predictions (
     id                      SERIAL PRIMARY KEY,
     game_id                 TEXT NOT NULL REFERENCES games(game_id),
     model_version           TEXT NOT NULL,
@@ -105,7 +92,7 @@ CREATE TABLE predictions (
     UNIQUE (game_id, model_version)
 );
 
-CREATE TABLE prediction_evaluations (
+CREATE TABLE IF NOT EXISTS prediction_evaluations (
     id                  SERIAL PRIMARY KEY,
     prediction_id       INTEGER NOT NULL REFERENCES predictions(id) ON DELETE CASCADE,
     actual_home_win     BOOLEAN NOT NULL,

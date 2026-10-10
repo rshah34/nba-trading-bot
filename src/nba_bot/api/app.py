@@ -14,11 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
-from nba_bot.agents import betting_agent, props_agent
+from nba_bot.agents import betting_agent
 from nba_bot.api import schemas
 from nba_bot.backtest.report import build_report
 from nba_bot.db.engine import SessionLocal
-from nba_bot.db.models import Bet, Game, Prediction, PropBet, Team
+from nba_bot.db.models import Bet, Game, Prediction, Team
 
 app = FastAPI(
     title="NBA Trading Bot API",
@@ -199,48 +199,6 @@ def bets_summary(
         pending_stmt = pending_stmt.where(Bet.model_version == model_version)
     n_pending = session.execute(pending_stmt).scalar_one()
     return schemas.BetsSummary(**rec, n_pending=n_pending)
-
-
-@app.get("/props/bets", response_model=list[schemas.PropBetRow])
-def list_prop_bets(
-    session: Session = Depends(get_session),
-    limit: int = Query(100, ge=1, le=500),
-) -> list[schemas.PropBetRow]:
-    """Recorded player-prop paper bets, most recent first."""
-    rows = session.execute(
-        select(PropBet, Game, Team)
-        .join(Game, PropBet.game_id == Game.game_id)
-        .outerjoin(Team, PropBet.team_id == Team.team_id)
-        .order_by(PropBet.decided_at.desc())
-        .limit(limit)
-    ).all()
-
-    def f(v):
-        return float(v) if v is not None else None
-
-    return [
-        schemas.PropBetRow(
-            game_id=b.game_id, game_date=g.game_date, player_name=b.player_name,
-            team=t.abbreviation if t else None, market=b.market, side=b.side,
-            line=float(b.line), sportsbook=b.sportsbook, decimal_odds=float(b.decimal_odds),
-            model_prob=float(b.model_prob), market_prob=float(b.market_prob),
-            edge=float(b.edge), ev=float(b.ev), stake_fraction=float(b.stake_fraction),
-            proj_mean=float(b.proj_mean), proj_minutes=f(b.proj_minutes), notes=b.notes,
-            settled=b.settled_at is not None, result=b.result,
-            actual_value=f(b.actual_value), pnl=f(b.pnl), clv=f(b.clv),
-        )
-        for b, g, t in rows
-    ]
-
-
-@app.get("/props/summary", response_model=schemas.PropsSummary)
-def props_summary(session: Session = Depends(get_session)) -> schemas.PropsSummary:
-    """Prop paper record (CLV first) and the model vs. the market on every priced line."""
-    rec = props_agent.track_record(session)
-    n_pending = session.execute(
-        select(func.count()).select_from(PropBet).where(PropBet.settled_at.is_(None))
-    ).scalar_one()
-    return schemas.PropsSummary(**rec, n_pending=n_pending)
 
 
 @app.get("/backtest", response_model=schemas.BacktestReport)

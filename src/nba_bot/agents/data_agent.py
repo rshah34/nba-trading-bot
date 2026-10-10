@@ -255,7 +255,10 @@ def backfill_recent_stats(session: Session, lookback_days: int = 3) -> dict:
         select(Game.game_id, Game.home_team_id, Game.away_team_id, Game.home_score, Game.away_score)
         .where(Game.status == "final", Game.home_score.is_not(None), Game.game_date >= cutoff)
     ).all()
-    have_players = set(session.execute(select(PlayerGameStats.game_id).distinct()).scalars().all())
+    have_players = set(session.execute(
+        select(PlayerGameStats.game_id)
+        .where(PlayerGameStats.game_id.in_([g.game_id for g in games])).distinct()
+    ).scalars())
 
     team_rows, player_rows = 0, 0
     for gid, home_id, away_id, hs, aws in games:
@@ -293,12 +296,15 @@ def _match_game_id(index, game_date: date, home_id: int, away_id: int) -> str | 
     return None
 
 
-def sync_odds(session: Session, markets: tuple[str, ...] = odds_api.DEFAULT_MARKETS) -> dict:
+def sync_odds(session: Session, markets: tuple[str, ...] | None = None) -> dict:
     """Capture current NBA odds for all books and attach them to our games.
 
     Each call inserts a fresh snapshot row per (game, sportsbook); repeated runs
     over a day build the line-movement history that mark_closing_lines() reads.
+    Costs one credit per market; `GAME_MARKETS` sets which.
     """
+    if markets is None:
+        markets = tuple(m.strip() for m in settings.game_markets.split(",") if m.strip())
     events, quota = odds_api.fetch_nba_odds(settings.odds_api_key, markets)
     index = _build_game_index(session)
 
@@ -341,28 +347,29 @@ def sync_odds(session: Session, markets: tuple[str, ...] = odds_api.DEFAULT_MARK
             "skipped_live": live, "quota": quota}
 
 
-def mark_closing_lines(session: Session) -> int:
+def mark_closing_lines(session: Session, lookback_days: int = 4) -> int:
     """Flag the latest pre-tipoff snapshot per (game, sportsbook) as the closing line.
 
-    Runs over games that have already started (tipoff in the past); the most
-    recently captured row for each book is the closing line, the rest are not.
+    Covers recently finished games only: older ones were marked on earlier runs and
+    never change, and no snapshot is ever stored after tip-off, so the newest row
+    per book is the close.
     """
-    started = session.execute(
-        select(Game.game_id).where(Game.status == "final")
+    cutoff = date.today() - timedelta(days=lookback_days)
+    rows = session.execute(
+        select(Odds)
+        .join(Game, Odds.game_id == Game.game_id)
+        .where(Game.status == "final", Game.game_date >= cutoff)
+        .order_by(Odds.game_id, Odds.captured_at.desc())
     ).scalars().all()
 
     marked = 0
-    for game_id in started:
-        rows = session.execute(
-            select(Odds).where(Odds.game_id == game_id).order_by(Odds.captured_at.desc())
-        ).scalars().all()
-        seen_books: set[str] = set()
-        for row in rows:
-            is_close = row.sportsbook not in seen_books
-            row.is_closing_line = is_close
-            if is_close:
-                seen_books.add(row.sportsbook)
-                marked += 1
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (row.game_id, row.sportsbook)
+        row.is_closing_line = key not in seen
+        if key not in seen:
+            seen.add(key)
+            marked += 1
     session.commit()
     return marked
 

@@ -36,12 +36,13 @@ def kelly_fraction(prob: float, decimal_odds: float) -> float:
 @dataclass
 class BetDecision:
     side: str                    # "home" | "away" | "none"
-    edge: float                  # calibrated prob − de-vigged market prob on the bet side
+    edge: float                  # bet_prob − de-vigged market prob on the bet side
     stake_fraction: float        # fraction of bankroll to wager (fractional Kelly, capped)
-    bet_prob: float              # model prob for the side bet
+    bet_prob: float              # model blended toward the market — what we size on
     market_prob: float           # de-vigged market prob for the side bet
     decimal_odds: float | None   # odds taken on the bet side
     expected_value: float        # EV per unit staked (>0 required to bet)
+    model_prob: float            # the model's own probability for the side bet
     reason: str
 
 
@@ -50,48 +51,46 @@ def decide_bet_decimal(
     home_decimal: float,
     away_decimal: float,
     *,
+    market_weight: float = 0.0,
     min_edge: float = 0.04,
+    max_edge: float | None = None,
     kelly_multiplier: float = 0.25,
     max_stake: float = 0.05,
 ) -> BetDecision:
     """Decide whether/how to bet one game from decimal odds (the live primitive).
 
-    De-vigs the two-way market to a fair probability, compares it to the model's
-    calibrated probability, and bets the side whose edge clears `min_edge`. Because
-    de-vigged probs and model probs each sum to 1, only one side can carry a positive
-    edge. Stake = fractional Kelly (× `kelly_multiplier`), capped at `max_stake` of
-    bankroll. Conservative by default — the model barely out-discriminates a coin.
+    De-vigs the two-way market to a fair probability and compares it to the model's
+    calibrated probability, optionally blended toward the market by `market_weight`
+    (the line is itself a strong forecast, so the blend is the honest number to size
+    on). Bets the side whose edge clears `min_edge`; only one side can. An edge
+    above `max_edge` is no bet either: a disagreement that large means the model is
+    missing something the market knows. Stake = fractional Kelly (×
+    `kelly_multiplier`), capped at `max_stake` of bankroll.
     """
     fair_home, fair_away = devig_two_way(1 / home_decimal, 1 / away_decimal)
-    home_edge = model_home_prob - fair_home
+    bet_home = market_weight * fair_home + (1 - market_weight) * model_home_prob
+    home_edge = bet_home - fair_home
 
     if home_edge > min_edge:
-        side, edge, p, fair, odds = ("home", home_edge, model_home_prob, fair_home, home_decimal)
+        side, edge, p, fair, odds, raw = (
+            "home", home_edge, bet_home, fair_home, home_decimal, model_home_prob)
     elif -home_edge > min_edge:  # away_edge == -home_edge
-        side, edge, p, fair, odds = ("away", -home_edge, 1 - model_home_prob, fair_away, away_decimal)
+        side, edge, p, fair, odds, raw = (
+            "away", -home_edge, 1 - bet_home, fair_away, away_decimal, 1 - model_home_prob)
     else:
-        return BetDecision("none", round(home_edge, 4), 0.0, model_home_prob,
-                           round(fair_home, 4), None, 0.0,
+        return BetDecision("none", round(home_edge, 4), 0.0, round(bet_home, 4),
+                           round(fair_home, 4), None, 0.0, round(model_home_prob, 4),
                            f"edge {home_edge:+.1%} within ±{min_edge:.0%} threshold — no bet")
+
+    if max_edge is not None and edge > max_edge:
+        return BetDecision("none", round(edge, 4), 0.0, round(p, 4), round(fair, 4), None, 0.0,
+                           round(raw, 4), f"edge {edge:+.1%} is too large to trust — no bet")
 
     stake = max(0.0, min(kelly_fraction(p, odds) * kelly_multiplier, max_stake))
     ev = p * (odds - 1) - (1 - p)
     return BetDecision(side, round(edge, 4), round(stake, 4), round(p, 4), round(fair, 4),
-                       round(odds, 3), round(ev, 4),
-                       f"bet {side}: model {p:.1%} vs market {fair:.1%}, edge {edge:+.1%}")
-
-
-def decide_bet(
-    model_home_prob: float,
-    home_american: int,
-    away_american: int,
-    **kwargs,
-) -> BetDecision:
-    """Decide a bet from American moneyline odds — thin wrapper over the decimal primitive."""
-    return decide_bet_decimal(
-        model_home_prob, american_to_decimal(home_american), american_to_decimal(away_american),
-        **kwargs,
-    )
+                       round(odds, 3), round(ev, 4), round(raw, 4),
+                       f"bet {side}: model {raw:.1%} vs market {fair:.1%}, edge {edge:+.1%}")
 
 
 def clv(bet_decimal_odds: float, closing_decimal_odds: float) -> float:

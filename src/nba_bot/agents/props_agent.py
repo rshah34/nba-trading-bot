@@ -31,15 +31,17 @@ from nba_bot.db.models import (
     PropProjection,
     Team,
 )
-from nba_bot.features.on_off import normalize_name
 from nba_bot.features.props import (
+    GUIDE_PROB,
     MARKETS,
     Adjustment,
     Projection,
     PropsData,
     load_props_data,
+    normalize_name,
     over_under_probs,
     project_team,
+    stat_guide,
 )
 
 log = logging.getLogger("nba_bot.props")
@@ -49,6 +51,8 @@ MODEL_VERSION = "props-v1"
 _ROSTER_WINDOW = timedelta(days=21)
 # Rows this close to a game's newest snapshot are that snapshot.
 _SNAPSHOT_WINDOW = timedelta(minutes=30)
+# A game snapshotted this recently isn't bought again by the next props run.
+_RESNAPSHOT_AFTER = timedelta(hours=6)
 _MIN_PROJECTED_MINUTES = 15.0
 _UNCERTAIN_STATUSES = {"day-to-day", "questionable", "doubtful", "gtd"}
 # An uncertain player this big changes his teammates' minutes either way he goes.
@@ -64,22 +68,35 @@ def prop_markets() -> tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 # Odds capture.
 # --------------------------------------------------------------------------- #
-def _player_index(data: PropsData) -> dict[str, list[int]]:
-    index: dict[str, list[int]] = defaultdict(list)
-    for pid, name in data.names.items():
-        index[normalize_name(name)].append(pid)
-    return index
-
-
-def _resolve_player(index: dict[str, list[int]], data: PropsData, name: str,
-                    team_ids: set[int]) -> int | None:
+def _resolve_player(data: PropsData, name: str, team_ids: set[int]) -> int | None:
     """Match a sportsbook's player name to a player id. Two players can share a
     name, so prefer the one on a team in this game; otherwise require uniqueness."""
-    ids = index.get(normalize_name(name), [])
+    ids = data.name_index().get(normalize_name(name), [])
     here = [pid for pid in ids if data.current_team.get(pid) in team_ids]
     if len(here) == 1:
         return here[0]
     return ids[0] if len(ids) == 1 else None
+
+
+# Typical slate, for pacing the month's credits.
+_GAMES_PER_DAY = 7.5
+_GAME_LINE_SNAPSHOTS_PER_DAY = 3
+
+
+def days_until_reset(today: date, reset_day: int) -> int:
+    """Whole days after today until the quota refills."""
+    if today.day < reset_day:
+        return reset_day - today.day - 1
+    next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+    return (next_month - today).days + reset_day - 2
+
+
+def credits_to_hold_back(days_left: int, n_prop_markets: int, n_game_markets: int) -> float:
+    """Credits the rest of the quota month still needs for the essentials: the
+    props snapshot that bets are made from, and the game lines. Closing snapshots
+    are the one optional purchase, so they only spend what is left above this."""
+    per_day = _GAMES_PER_DAY * n_prop_markets + _GAME_LINE_SNAPSHOTS_PER_DAY * n_game_markets
+    return days_left * per_day
 
 
 def sync_prop_odds(
@@ -87,16 +104,19 @@ def sync_prop_odds(
     *,
     data: PropsData | None = None,
     only_open_bets: bool = False,
-    include_preseason: bool = False,
     window_hours: float = 20,
 ) -> dict:
     """Snapshot player-prop odds for every game tipping within `window_hours`.
 
+    Each game costs one credit per market, so nothing is bought twice: a game
+    already snapshotted this afternoon is skipped.
+
     `only_open_bets` is the closing snapshot: it re-prices just the markets we hold
-    bets in, which is all CLV needs and costs a fraction of a full slate.
+    bets in, which is all CLV needs. It is also the only optional purchase, so on a
+    tight quota it is the first thing to go — it runs only while the month's
+    essentials are still covered (`credits_to_hold_back`).
     """
     data = data or load_props_data(session)
-    index = _player_index(data)
     game_index = data_agent._build_game_index(session)
     markets = prop_markets()
 
@@ -109,26 +129,38 @@ def sync_prop_odds(
 
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(hours=window_hours)
-    reserve = settings.odds_quota_reserve
-    out = {"events": 0, "rows": 0, "unmatched_players": 0, "skipped": 0, "quota": None,
+    recent = set(session.execute(
+        select(PropOdds.game_id).where(PropOdds.captured_at >= now - _RESNAPSHOT_AFTER).distinct()
+    ).scalars())
+
+    events, quota = odds_api.fetch_events(settings.odds_api_key)
+    floor = float(settings.odds_quota_reserve)
+    if only_open_bets:
+        n_game_markets = len([m for m in settings.game_markets.split(",") if m.strip()])
+        floor += credits_to_hold_back(
+            days_until_reset(now.date(), settings.odds_quota_reset_day), len(markets), n_game_markets
+        )
+    out = {"events": 0, "rows": 0, "unmatched_players": 0, "skipped": 0, "quota": quota,
            "stopped_for_quota": False}
 
-    for event in odds_api.fetch_events(settings.odds_api_key):
+    for event in events:
         tip = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
         if not (now < tip <= horizon):
             continue  # already started (in-play prices would poison the close) or not today
         home_id, away_id = resolve_team_id(event["home_team"]), resolve_team_id(event["away_team"])
         game_id = (data_agent._match_game_id(game_index, tip.date(), home_id, away_id)
                    if home_id and away_id else None)
-        if game_id is None or (is_preseason(game_id) and not include_preseason):
+        if game_id is None or is_preseason(game_id):
             out["skipped"] += 1
             continue
+        if not only_open_bets and game_id in recent:
+            continue  # the early run already bought this game
         wanted = tuple(m for m in markets if m in open_markets[game_id]) if only_open_bets else markets
         if not wanted:
             continue
 
         remaining = (out["quota"] or {}).get("remaining")
-        if remaining is not None and float(remaining) - len(wanted) < reserve:
+        if remaining is not None and float(remaining) - len(wanted) < floor:
             out["stopped_for_quota"] = True
             break
 
@@ -136,7 +168,7 @@ def sync_prop_odds(
         out["quota"] = quota
         out["events"] += 1
         for offer in odds_api.parse_event_props(raw):
-            pid = _resolve_player(index, data, offer.player, {home_id, away_id})
+            pid = _resolve_player(data, offer.player, {home_id, away_id})
             if pid is None:
                 out["unmatched_players"] += 1
             session.add(PropOdds(
@@ -165,16 +197,15 @@ def _team_view(
     session: Session, data: PropsData, team_id: int, opp_factors: dict[str, float] | None,
     game_date: date, as_of: datetime, signals: dict[int, list],
 ) -> TeamView:
-    index = _player_index(data)
     roster = [
         pid for pid, team in data.current_team.items()
-        if team == team_id and _last_seen(session, pid) >= game_date - _ROSTER_WINDOW
+        if team == team_id and data.last_seen[pid] >= game_date - _ROSTER_WINDOW
     ]
 
     out_ids: set[int] = set()
     blocked: dict[int, str] = {}
     for inj in analysis_agent.current_injuries(session, team_id, as_of):
-        pid = _resolve_player(index, data, inj["player"], {team_id})
+        pid = _resolve_player(data, inj["player"], {team_id})
         if pid is None:
             continue
         status = (inj["status"] or "").lower()
@@ -210,20 +241,6 @@ def _team_view(
                            opp_factors=opp_factors, extra=extra,
                            fallback_minutes=data.exhibition_minutes)
     return TeamView(projections, alt, blocked)
-
-
-def _last_seen(session: Session, player_id: int) -> date:
-    """Date of a player's most recent appearance (preseason counts — it's roster news)."""
-    cache = session.info.setdefault("props_last_seen", None)
-    if cache is None:
-        rows = session.execute(
-            select(PlayerGameStats.player_id, func.max(Game.game_date))
-            .join(Game, PlayerGameStats.game_id == Game.game_id)
-            .where(PlayerGameStats.minutes > 0)
-            .group_by(PlayerGameStats.player_id)
-        ).all()
-        cache = session.info["props_last_seen"] = dict(rows)
-    return cache.get(player_id, date.min)
 
 
 def _latest_quotes(session: Session, game_id: str) -> dict[tuple[int, str], list[betting.PropQuote]]:
@@ -267,27 +284,23 @@ def _consensus(quotes: list[betting.PropQuote]) -> tuple[float, int, float] | No
 # --------------------------------------------------------------------------- #
 # Betting.
 # --------------------------------------------------------------------------- #
-def record_prop_bets(
+def price_props(
     session: Session,
     game_date: date,
     *,
     data: PropsData | None = None,
     as_of: datetime | None = None,
-    dry_run: bool = False,
-    include_preseason: bool = False,
+    log_lines: bool = True,
     window_hours: float | None = None,
     min_team_games: int = 5,
-    max_bets: int = 10,
-    max_game_stake: float = 0.05,
-    max_daily_stake: float = 0.15,
     **decide_kwargs,
-) -> dict:
-    """Price every quoted player line for a date and record the best bets.
+) -> list[dict]:
+    """Price every quoted player line for a date and return the bets worth making,
+    best edge first — at most one per player (his markets are heavily correlated),
+    and none for a player already bet. Nothing is bet here.
 
-    At most one bet per player (his markets are heavily correlated), with stake and
-    bet count capped per game and for the day — a slate of props is not independent
-    bets, and the caps cover the whole day however many times this runs.
-
+    `log_lines` also stores every line it priced (bet or not) so the model can be
+    scored against the market later.
     `min_team_games`: no bet on a player until he has that many games this season
     for his current team. Opening-week projections rest on last season's role, often
     on another team; the lines are still priced and logged, just not bet.
@@ -305,9 +318,8 @@ def record_prop_bets(
     ).scalars().all()
 
     candidates: list[dict] = []
-    priced = 0
     for game in games:
-        if is_preseason(game.game_id) and not include_preseason:
+        if is_preseason(game.game_id):
             continue
         if game.tipoff_at is not None and game.tipoff_at <= as_of:
             continue
@@ -335,7 +347,7 @@ def record_prop_bets(
                 continue
 
             cons = _consensus(qs)
-            if cons is not None and not dry_run:
+            if cons is not None and log_lines:
                 line, n_books, market_over = cons
                 over, under, push = proj.probs(market, line)
                 session.execute(
@@ -347,7 +359,6 @@ def record_prop_bets(
                             proj_mean=round(proj.mean(market), 3), proj_minutes=proj.minutes)
                     .on_conflict_do_nothing(constraint="prop_projections_key")
                 )
-                priced += 1
 
             settled_in = sum(g.season == season and g.team_id == team
                              for g in data.logs.get(pid, []))
@@ -368,74 +379,63 @@ def record_prop_bets(
                     d, proj = d2, other
                 notes.append("holds whether or not the questionable teammate plays")
             cand = {
-                "game_id": game.game_id, "matchup": matchup, "tipoff_at": game.tipoff_at,
+                "kind": "prop", "edge": d.edge, "game_id": game.game_id, "matchup": matchup, "tipoff_at": game.tipoff_at,
                 "player_id": pid, "player_name": data.names[pid], "team_id": team,
                 "team": names.get(team, "?"), "market": market, "decision": d,
                 "proj_mean": proj.mean(market), "proj_phi": proj.phis[market],
                 "proj_minutes": proj.minutes, "notes": notes,
+                "stat_guide": stat_guide(proj, market),
             }
             best = per_player.get(pid)
-            if best is None or d.expected_value > best["decision"].expected_value:
+            if best is None or d.edge > best["edge"]:
                 per_player[pid] = cand
         candidates.extend(per_player.values())
 
-    candidates.sort(key=lambda c: c["decision"].expected_value, reverse=True)
-    # Bets already on the books for this date count against every cap.
-    existing = session.execute(
-        select(PropBet.game_id, PropBet.player_id, PropBet.stake_fraction)
-        .join(Game, PropBet.game_id == Game.game_id)
-        .where(Game.game_date == game_date, PropBet.model_version == MODEL_VERSION)
-    ).all()
-    already = {(gid, pid) for gid, pid, _ in existing}
-    game_stake: dict[str, float] = defaultdict(float)
-    for gid, _pid, stake in existing:
-        game_stake[gid] += float(stake)
-    total_stake = sum(game_stake.values())
-    chosen: list[dict] = []
-    for c in candidates:
-        d = c["decision"]
-        if (c["game_id"], c["player_id"]) in already or len(existing) + len(chosen) >= max_bets:
-            continue
-        room = min(max_game_stake - game_stake[c["game_id"]], max_daily_stake - total_stake)
-        if room <= 0.001:
-            continue
-        d.stake_fraction = round(min(d.stake_fraction, room), 4)
-        game_stake[c["game_id"]] += d.stake_fraction
-        total_stake += d.stake_fraction
-        chosen.append(c)
-
-    placed = 0
-    if not dry_run:
-        for c in chosen:
-            d = c["decision"]
-            res = session.execute(
-                pg_insert(PropBet)
-                .values(
-                    game_id=c["game_id"], player_id=c["player_id"], player_name=c["player_name"],
-                    team_id=c["team_id"], model_version=MODEL_VERSION, decided_at=as_of,
-                    market=c["market"], side=d.side, line=d.line, sportsbook=d.sportsbook,
-                    n_books=d.n_books, decimal_odds=d.decimal_odds, model_prob=d.model_prob,
-                    market_prob=d.market_prob, edge=d.edge, ev=d.expected_value,
-                    stake_fraction=d.stake_fraction, proj_mean=round(c["proj_mean"], 3),
-                    proj_phi=round(c["proj_phi"], 3), proj_minutes=c["proj_minutes"],
-                    notes="; ".join(c["notes"]) or None,
-                )
-                .on_conflict_do_nothing(constraint="prop_bets_game_player_model_key")
-                .returning(PropBet.id)
-            )
-            placed += res.first() is not None
+    already = set(session.execute(
+        select(PropBet.game_id, PropBet.player_id).where(PropBet.model_version == MODEL_VERSION)
+    ).all())
+    candidates = [c for c in candidates if (c["game_id"], c["player_id"]) not in already]
+    candidates.sort(key=lambda c: c["edge"], reverse=True)
+    if log_lines:
         session.commit()
-    return {"date": str(game_date), "priced_lines": priced, "candidates": len(candidates),
-            "placed": placed, "bets": chosen}
+    return candidates
+
+
+def record_prop_bets(session: Session, chosen: list[dict], as_of: datetime) -> int:
+    """Record the chosen prop bets. One bet per player per game; returns how many
+    were new."""
+    placed = 0
+    for c in chosen:
+        d = c["decision"]
+        res = session.execute(
+            pg_insert(PropBet)
+            .values(
+                game_id=c["game_id"], player_id=c["player_id"], player_name=c["player_name"],
+                team_id=c["team_id"], model_version=MODEL_VERSION, decided_at=as_of,
+                market=c["market"], side=d.side, line=d.line, sportsbook=d.sportsbook,
+                n_books=d.n_books, decimal_odds=d.decimal_odds, model_prob=d.model_prob,
+                market_prob=d.market_prob, edge=d.edge, ev=d.expected_value,
+                stake_fraction=d.stake_fraction, proj_mean=round(c["proj_mean"], 3),
+                proj_phi=round(c["proj_phi"], 3), proj_minutes=c["proj_minutes"],
+                notes="; ".join(c["notes"]) or None, stat_guide=c["stat_guide"],
+            )
+            .on_conflict_do_nothing(constraint="prop_bets_game_player_model_key")
+            .returning(PropBet.id)
+        )
+        placed += res.first() is not None
+    session.commit()
+    return placed
 
 
 # --------------------------------------------------------------------------- #
 # Settlement + track record.
 # --------------------------------------------------------------------------- #
-def _stat_value(row: PlayerGameStats, market: str) -> int:
-    columns = {"pts": "points", "reb": "rebounds", "ast": "assists", "stl": "steals",
+_BOX_COLUMN = {"pts": "points", "reb": "rebounds", "ast": "assists", "stl": "steals",
                "blk": "blocks", "fg3m": "fg3m", "tov": "turnovers"}
-    return sum(getattr(row, columns[s]) or 0 for s in MARKETS[market])
+
+
+def _stat_value(row: PlayerGameStats, market: str) -> int:
+    return sum(getattr(row, _BOX_COLUMN[s]) or 0 for s in MARKETS[market])
 
 
 def _no_push(mean: float, phi: float, line: float, side: str) -> float:
@@ -479,11 +479,18 @@ def _closing_prob(session: Session, bet: PropBet) -> float | None:
 
 def settle_prop_bets(session: Session) -> dict:
     """Score prop bets (and every priced line) for games whose box score is in."""
-    have_box = set(session.execute(select(PlayerGameStats.game_id).distinct()).scalars())
     rows = session.execute(
         select(PropBet, Game).join(Game, PropBet.game_id == Game.game_id)
         .where(PropBet.settled_at.is_(None), Game.status == "final")
     ).all()
+    pending = session.execute(
+        select(PropProjection, Game).join(Game, PropProjection.game_id == Game.game_id)
+        .where(PropProjection.actual_value.is_(None), Game.status == "final")
+    ).all()
+    candidates = {g.game_id for _, g in rows} | {g.game_id for _, g in pending}
+    have_box = set(session.execute(
+        select(PlayerGameStats.game_id).where(PlayerGameStats.game_id.in_(candidates)).distinct()
+    ).scalars()) if candidates else set()
 
     settled = 0
     for bet, game in rows:
@@ -494,6 +501,12 @@ def settle_prop_bets(session: Session) -> dict:
             bet.result, bet.pnl = "void", 0.0  # books refund a prop when he doesn't play
         else:
             bet.actual_value = _stat_value(box, bet.market)
+            if bet.stat_guide:
+                # A new dict, so the JSON column is seen as changed.
+                bet.stat_guide = {
+                    stat: {**g, "actual": getattr(box, _BOX_COLUMN[stat]) or 0}
+                    for stat, g in bet.stat_guide.items()
+                }
             bet.result, bet.pnl = betting.settle_prop(
                 bet.side, float(bet.line), bet.actual_value,
                 float(bet.decimal_odds), float(bet.stake_fraction),
@@ -505,10 +518,6 @@ def settle_prop_bets(session: Session) -> dict:
         settled += 1
 
     scored = 0
-    pending = session.execute(
-        select(PropProjection, Game).join(Game, PropProjection.game_id == Game.game_id)
-        .where(PropProjection.actual_value.is_(None), Game.status == "final")
-    ).all()
     for proj, game in pending:
         if game.game_id not in have_box:
             continue
@@ -540,6 +549,22 @@ def track_record(session: Session) -> dict:
         "avg_clv": round(sum(clvs) / len(clvs), 4) if clvs else None,
         "clv_positive_rate": round(sum(c > 0 for c in clvs) / len(clvs), 3) if clvs else None,
     }
+
+    # Single-stat guidance sent with the picks: each "over at X" / "under at Y" call
+    # should come in about GUIDE_PROB of the time.
+    calls = hits = 0
+    for b in bets:
+        for g in (b.stat_guide or {}).values():
+            if "actual" not in g:
+                continue
+            if g["over_at"] is not None:
+                calls += 1
+                hits += g["actual"] > g["over_at"]
+            if g["under_at"] is not None:
+                calls += 1
+                hits += g["actual"] < g["under_at"]
+    if calls:
+        record["guide"] = {"calls": calls, "hits": hits, "target": GUIDE_PROB}
 
     lines = session.execute(
         select(PropProjection).where(PropProjection.actual_value.is_not(None))

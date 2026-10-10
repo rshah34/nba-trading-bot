@@ -6,31 +6,30 @@ from nba_bot import digest, notify
 from nba_bot.config import settings
 
 
-def test_message_is_written_to_disk_even_with_no_channels(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "notify_channels", "")
-    assert notify.send("hello", log_dir=tmp_path) == {}
+def test_message_is_written_to_disk_even_with_no_recipient(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "notify_imessage_to", "")
+    assert notify.send("hello", log_dir=tmp_path) == "off"
     assert next(tmp_path.glob("digest-*.txt")).read_text() == "hello\n"
 
 
-def test_imessage_passes_text_as_an_argument_not_into_the_script(tmp_path, monkeypatch):
+def test_text_is_passed_as_an_argument_not_into_the_script(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(settings, "notify_channels", "imessage")
     monkeypatch.setattr(settings, "notify_imessage_to", "+15555550100")
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(cmd))
     text = 'De\'Aaron "Fox" over 24.5\nline two'
-    assert notify.send(text, log_dir=tmp_path) == {"imessage": "ok"}
+    assert notify.send(text, log_dir=tmp_path) == "ok"
     cmd = calls[0]
     assert cmd[0] == "osascript" and cmd[-2:] == [text, "+15555550100"]
     assert "Fox" not in cmd[2]          # the script itself never contains the message
 
 
-def test_a_failing_channel_is_reported_not_raised(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "notify_channels", "imessage, ntfy, carrier-pigeon")
-    monkeypatch.setattr(settings, "notify_imessage_to", "")
-    monkeypatch.setattr(settings, "notify_ntfy_topic", "")
-    result = notify.send("hi", log_dir=tmp_path)
-    assert set(result) == {"imessage", "ntfy", "carrier-pigeon"}
-    assert all(v != "ok" for v in result.values())
+def test_a_failed_send_is_reported_not_raised(tmp_path, monkeypatch):
+    def boom(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd, stderr="Messages got an error")
+
+    monkeypatch.setattr(settings, "notify_imessage_to", "+15555550100")
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert notify.send("hi", log_dir=tmp_path) == "osascript failed: Messages got an error"
 
 
 def test_american_odds_formatting():

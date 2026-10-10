@@ -1,5 +1,7 @@
 services:
   db:
+    # Plain Postgres 16 with one unused extension available. Kept as-is so existing
+    # data volumes keep working; nothing in the schema needs pgvector any more.
     image: pgvector/pgvector:pg16
     container_name: nba_bot_db
     restart: unless-stopped

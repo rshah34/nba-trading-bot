@@ -1,5 +1,5 @@
 """Analysis Agent: for a single game, assemble point-in-time context (recent form,
-injuries, and RAG-retrieved news — all filtered to an `as_of` cutoff), ask Claude
+injuries, and the strongest news reports — all filtered to an `as_of` cutoff), ask Claude
 for an independent win-probability estimate, then compare it to the market to
 compute edge.
 
@@ -23,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from nba_bot import usage
+from nba_bot.agents import news_agent
 from nba_bot.config import settings
 from nba_bot.db.models import (
     REAL_GAMES,
@@ -34,10 +35,7 @@ from nba_bot.db.models import (
     Team,
     TeamGameStats,
 )
-from nba_bot.features.four_factors import team_four_factors
-from nba_bot.features.on_off import oracle_absences, team_on_off
 from nba_bot.markets import MarketLine, market_line_from_odds
-from nba_bot.rag import retrieval
 
 log = logging.getLogger("nba_bot.analysis")
 
@@ -190,15 +188,8 @@ _SYSTEM = (
     "and injuries. Be decisive: when one team is clearly stronger, commit to a confident "
     "probability (0.65-0.80+); only stay near 0.50 when the matchup is genuinely even. "
     "Weigh each team's leading contributors and their recent production; if a key player "
-    "is out, adjust for the scoring/impact lost. When ON-OFF splits are given, prefer them to "
-    "reputation — but respect the stated regime: a NEW absence means recent form overstates "
-    "that team, whereas a long-term absence is ALREADY reflected in recent form and must not "
-    "be counted twice; a returning player means form understates the team. Treat small samples "
-    "and lopsided opponent strength with appropriate skepticism. When a STYLE profile is given, reason about "
-    "the stylistic matchup — the Four Factors (shooting efficiency, turnovers, rebounding, "
-    "free-throw generation) and pace — because one team's strength meeting the specific "
-    "weakness it faces can swing a game more than the overall records suggest. You are NOT "
-    "given the betting line — this is your own independent estimate."
+    "is out, adjust for the scoring/impact lost. You are NOT given the betting line — this "
+    "is your own independent estimate."
 )
 
 
@@ -217,79 +208,6 @@ def _players_line(players: list, injuries: list) -> str:
         f"{p['name']} {p['ppg']:.0f}/{p['rpg']:.0f}/{p['apg']:.0f}"
         + (" (OUT)" if p["name"] in injured else "")
         for p in players
-    )
-
-
-def _fmt_pct(x) -> str:
-    return f"{x * 100:.1f}%" if x is not None else "n/a"
-
-
-def _style_section(home: str, away: str, hff: dict | None, aff: dict | None) -> str:
-    """Four Factors profiles + the key stylistic mismatches. Empty string when
-    either team lacks the raw-count data (e.g. a season not yet backfilled), so the
-    prompt degrades gracefully to the stats-only form."""
-    if not hff or not aff or not hff.get("games") or not aff.get("games"):
-        return ""
-
-    def off(f: dict) -> str:
-        return (f"pace {f['pace']}, eFG% {_fmt_pct(f['efg'])}, TOV% {_fmt_pct(f['tov_pct'])}, "
-                f"OREB% {_fmt_pct(f['oreb_pct'])}, FT rate {f['ft_rate']}")
-
-    def dfn(f: dict) -> str:
-        return (f"opp eFG% {_fmt_pct(f['def_efg'])}, forced TOV% {_fmt_pct(f['def_tov_pct'])}, "
-                f"DREB% {_fmt_pct(f['dreb_pct'])}, opp FT rate {f['def_ft_rate']}")
-
-    return (
-        "STYLE — Four Factors, recent games "
-        "(league avg ≈ pace 99, eFG% 54%, TOV% 13%, OREB% 27%, FT rate .25):\n"
-        f"  {home} OFF: {off(hff)}\n  {home} DEF: {dfn(hff)}\n"
-        f"  {away} OFF: {off(aff)}\n  {away} DEF: {dfn(aff)}\n"
-        "  Key matchups (each offense vs the other's defense):\n"
-        f"   - {home} eFG% {_fmt_pct(hff['efg'])} vs {away} defense {_fmt_pct(aff['def_efg'])}\n"
-        f"   - {away} eFG% {_fmt_pct(aff['efg'])} vs {home} defense {_fmt_pct(hff['def_efg'])}\n"
-        f"   - Off. rebounding: {home} OREB% {_fmt_pct(hff['oreb_pct'])} vs {away} DREB% "
-        f"{_fmt_pct(aff['dreb_pct'])}; {away} OREB% {_fmt_pct(aff['oreb_pct'])} vs {home} DREB% "
-        f"{_fmt_pct(hff['dreb_pct'])}\n"
-        f"   - Pace: {home} {hff['pace']} vs {away} {aff['pace']}\n\n"
-    )
-
-
-_REGIME_NOTE = {
-    "newly_out": "NEW absence — recent form still includes him, so it OVERSTATES this team",
-    "long_term_out": "already out through the recent stretch — form ALREADY reflects this, "
-                     "do not double-count",
-    "returning": "was out, now expected back — recent form UNDERSTATES this team",
-}
-
-
-def _onoff_section(home: str, away: str, hon: list | None, aon: list | None) -> str:
-    """Team performance with vs. without key absentees, labelled by regime so the
-    model knows whether the absence is new information or already priced into form."""
-    if not hon and not aon:
-        return ""
-
-    def lines(team: str, impacts: list) -> list[str]:
-        if not impacts:
-            return [f"  {team}: none notable"]
-        out = []
-        for i in impacts:
-            out.append(
-                f"  {team} — {i['player']} ({i['mpg']:.0f} mpg; "
-                f"{_REGIME_NOTE.get(i['regime'], i['regime'])}): "
-                f"team net rating {i['net_rtg_with']:+.1f}/100 in {i['games_with']}g WITH him vs "
-                f"{i['net_rtg_without']:+.1f}/100 in {i['games_without']}g WITHOUT "
-                f"→ shrunk swing {i['delta_shrunk']:+.1f}/100"
-            )
-            out.append(
-                f"      (opponent strength faced: {i['opp_quality_with']:+.1f} with / "
-                f"{i['opp_quality_without']:+.1f} without — small samples, discount accordingly)"
-            )
-        return out
-
-    return (
-        "ON-OFF (how the team actually performs with vs. without key absentees):\n"
-        + "\n".join(lines(home, hon or []) + lines(away, aon or []))
-        + "\n\n"
     )
 
 
@@ -312,14 +230,12 @@ def _build_user_prompt(context: dict) -> str:
         f"REST — home {context['home_rest_days']}d (back-to-back: {context['home_b2b']}), "
         f"away {context['away_rest_days']}d (back-to-back: {context['away_b2b']})\n\n"
         f"FORM (recent games):\n{_form_line(home, hf)}\n{_form_line(away, af)}\n{edge_line}\n"
-        f"{_style_section(home, away, context.get('home_ff'), context.get('away_ff'))}"
         f"KEY PLAYERS (recent per-game pts/reb/ast):\n"
         f"  {home}: {_players_line(context['home_players'], context['home_injuries'])}\n"
         f"  {away}: {_players_line(context['away_players'], context['away_injuries'])}\n\n"
         f"INJURIES — {home}: {context['home_injuries'] or 'none reported'}\n"
         f"INJURIES — {away}: {context['away_injuries'] or 'none reported'}\n\n"
-        f"{_onoff_section(home, away, context.get('home_onoff'), context.get('away_onoff'))}"
-        f"NEWS:\n{context['news'] or '(none)'}\n"
+        f"NEWS (player reports, most reliable first):\n{context['news'] or '(none)'}\n"
     )
 
 
@@ -349,23 +265,8 @@ def predict_game(
     model_version: str | None = None,
     client: anthropic.Anthropic | None = None,
     model: str | None = None,
-    use_news: bool = True,
-    oracle_injuries: bool = False,
-    use_matchup_features: bool = True,
 ) -> Prediction:
-    """Generate, store, and return a prediction for one game as of a cutoff time.
-
-    use_news=False skips RAG retrieval — used for historical backtests, where no
-    point-in-time news exists, so the Voyage call would be pure waste.
-
-    oracle_injuries=True derives availability from the game's own box score instead
-    of the (historically empty) injury table. BACKTEST ONLY — it peeks at the game
-    and assumes perfect pre-tip knowledge, so it measures the on-off feature's
-    ceiling, not a real track record. See features.on_off.oracle_absences.
-
-    use_matchup_features=False drops the Four Factors STYLE + ON-OFF sections,
-    reverting to the champion prompt — used for a clean A/B baseline on the same slice.
-    """
+    """Generate, store, and return a prediction for one game as of a cutoff time."""
     as_of = as_of or datetime.now(timezone.utc)
     model = model or settings.analysis_model
     model_version = model_version or model
@@ -379,35 +280,23 @@ def predict_game(
 
     home_form = recent_form(session, game.home_team_id, game.game_date)
     away_form = recent_form(session, game.away_team_id, game.game_date)
-    if oracle_injuries:
-        home_inj = oracle_absences(session, game_id, game.home_team_id, game.season, game.game_date)
-        away_inj = oracle_absences(session, game_id, game.away_team_id, game.season, game.game_date)
-    else:
-        home_inj = current_injuries(session, game.home_team_id, as_of)
-        away_inj = current_injuries(session, game.away_team_id, as_of)
+    home_inj = current_injuries(session, game.home_team_id, as_of)
+    away_inj = current_injuries(session, game.away_team_id, as_of)
     home_players = player_form(session, game.home_team_id, game.game_date)
     away_players = player_form(session, game.away_team_id, game.game_date)
-    if use_matchup_features:
-        home_ff = asdict(team_four_factors(session, game.home_team_id, game.game_date))
-        away_ff = asdict(team_four_factors(session, game.away_team_id, game.game_date))
-        home_onoff = [asdict(i) for i in team_on_off(
-            session, game.home_team_id, game.season, game.game_date, home_inj, home_players)]
-        away_onoff = [asdict(i) for i in team_on_off(
-            session, game.away_team_id, game.season, game.game_date, away_inj, away_players)]
-    else:  # champion baseline — omit so the prompt sections degrade to empty
-        home_ff = away_ff = None
-        home_onoff = away_onoff = []
-
-    news_hits = []
-    if use_news:
-        news_query = f"injury, lineup, and roster news for {home.full_name} and {away.full_name}"
-        news_hits = retrieval.retrieve_relevant_news(
-            session,
-            query=news_query,
-            team_ids=[game.home_team_id, game.away_team_id],
-            as_of=game.game_date,
-        )
-    news_text = "\n".join(f"- {h.title}: {h.chunk_text}" for h in news_hits)
+    # News = the reports about these two teams that are most firmly and widely
+    # sourced as of the cutoff (already read out of every article by the news agent).
+    reports = news_agent.team_news(session, [game.home_team_id, game.away_team_id], as_of)
+    team_names = {game.home_team_id: home.full_name, game.away_team_id: away.full_name}
+    news_lines = [
+        f"- {r.signal.player_name}"
+        + (f" ({team_names[r.signal.team_id]})" if r.signal.team_id in team_names else "")
+        + f" — {r.signal.kind.replace('_', ' ')}"
+        + (f", {r.sources} sources" if r.sources > 1 else "")
+        + f": {r.signal.summary}"
+        for r in reports
+    ]
+    news_text = "\n".join(news_lines)
 
     context = {
         "home_team": home.full_name,
@@ -419,10 +308,6 @@ def predict_game(
         "away_b2b": game.is_back_to_back_away,
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
-        "home_ff": home_ff,
-        "away_ff": away_ff,
-        "home_onoff": home_onoff,
-        "away_onoff": away_onoff,
         "home_players": home_players,
         "away_players": away_players,
         "home_injuries": home_inj,
@@ -440,15 +325,9 @@ def predict_game(
         "as_of": as_of.isoformat(),
         "home_injuries": home_inj,
         "away_injuries": away_inj,
-        "news_urls": [h.url for h in news_hits],
+        "news": news_lines,
         "home_form": asdict(home_form),
         "away_form": asdict(away_form),
-        "home_ff": home_ff,
-        "away_ff": away_ff,
-        "home_onoff": home_onoff,
-        "away_onoff": away_onoff,
-        "oracle_injuries": oracle_injuries,
-        "matchup_features": use_matchup_features,
         "home_players": [p["name"] for p in home_players],
         "away_players": [p["name"] for p in away_players],
         "market": {"home_win_prob": market.home_win_prob, "home_margin": market.home_margin,

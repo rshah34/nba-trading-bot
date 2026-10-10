@@ -3,7 +3,7 @@
 RSS is free and keyless. Several feeds are read because they carry different
 things: wire-style reporting, transactions, and the short player-news blurbs
 (minutes limits, lineup changes, rest days) that move player props. Each article is tagged with the team ids it mentions
-by scanning its text for team nicknames, so retrieval can later filter news down
+by scanning its text for team nicknames, so the news can later be filtered down
 to the two teams in a matchup.
 
 Matching is a deliberate simplification: articles are tagged by team nickname

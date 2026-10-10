@@ -1,6 +1,5 @@
 from datetime import date, datetime
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     JSON,
@@ -150,16 +149,6 @@ class NewsArticle(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
-class NewsChunk(Base):
-    __tablename__ = "news_chunks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    article_id: Mapped[int] = mapped_column(ForeignKey("news_articles.id", ondelete="CASCADE"), nullable=False)
-    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-
 class Prediction(Base):
     __tablename__ = "predictions"
     __table_args__ = (
@@ -275,6 +264,9 @@ class PropBet(Base):
     proj_phi: Mapped[float] = mapped_column(Numeric, nullable=False)
     proj_minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Single-stat guidance sent with the pick (migration 007): per stat, the
+    # projection and the lines at which the model would take the over / the under.
+    stat_guide: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Settlement (after the game resolves):
     closing_prob: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     clv: Mapped[float | None] = mapped_column(Numeric, nullable=True)

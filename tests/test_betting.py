@@ -3,7 +3,7 @@
 from nba_bot.betting import (
     american_to_decimal,
     clv,
-    decide_bet,
+    decide_bet_decimal,
     kelly_fraction,
     simulate_paper_trade,
 )
@@ -24,7 +24,7 @@ def test_kelly_fraction():
 
 def test_decide_bet_takes_the_edge_side_and_sizes_fractionally():
     # Market -110/-110 => fair ~50/50. Model loves home at 0.60 => ~10% edge.
-    d = decide_bet(0.60, -110, -110, min_edge=0.04, kelly_multiplier=0.25, max_stake=0.05)
+    d = decide_bet_decimal(0.60, american_to_decimal(-110), american_to_decimal(-110), min_edge=0.04, kelly_multiplier=0.25, max_stake=0.05)
     assert d.side == "home"
     assert d.edge > 0.09
     assert 0 < d.stake_fraction <= 0.05      # capped
@@ -32,7 +32,7 @@ def test_decide_bet_takes_the_edge_side_and_sizes_fractionally():
 
 
 def test_decide_bet_picks_away_when_model_fades_home():
-    d = decide_bet(0.35, -110, -110)
+    d = decide_bet_decimal(0.35, american_to_decimal(-110), american_to_decimal(-110))
     assert d.side == "away"
     assert d.bet_prob == 0.65                 # 1 - model home prob
     assert d.edge > 0.09
@@ -40,14 +40,14 @@ def test_decide_bet_picks_away_when_model_fades_home():
 
 def test_decide_bet_no_bet_when_within_threshold():
     # Model agrees with the market -> no edge -> no bet.
-    d = decide_bet(0.52, -110, -110, min_edge=0.04)
+    d = decide_bet_decimal(0.52, american_to_decimal(-110), american_to_decimal(-110), min_edge=0.04)
     assert d.side == "none"
     assert d.stake_fraction == 0.0
 
 
 def test_decide_bet_respects_the_vig_via_devig():
     # Heavy favorite -300/+250: fair home ~0.74. Model at 0.75 is NOT a real edge.
-    d = decide_bet(0.75, -300, 250, min_edge=0.04)
+    d = decide_bet_decimal(0.75, american_to_decimal(-300), american_to_decimal(250), min_edge=0.04)
     assert d.side == "none"
 
 
@@ -126,3 +126,56 @@ def test_settle_prop():
     assert settle_prop("over", 24.5, 27, 1.9, 0.01) == ("won", 0.009)
     assert settle_prop("under", 24.5, 27, 1.9, 0.01) == ("lost", -0.01)
     assert settle_prop("under", 5.0, 5, 1.9, 0.01) == ("push", 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Blended game bets + the daily picks.
+# --------------------------------------------------------------------------- #
+from types import SimpleNamespace  # noqa: E402
+
+from nba_bot import picks  # noqa: E402
+
+
+def test_game_bet_is_sized_on_the_model_market_blend():
+    even = american_to_decimal(-110)
+    raw = decide_bet_decimal(0.62, even, even, min_edge=0.03)
+    blended = decide_bet_decimal(0.62, even, even, market_weight=0.5, min_edge=0.03)
+    assert blended.model_prob == 0.62 and blended.bet_prob == 0.56
+    assert blended.edge == round(raw.edge / 2, 4)          # half the raw disagreement
+    assert blended.stake_fraction < raw.stake_fraction
+    # A disagreement that only clears the bar unblended is no bet once blended.
+    assert decide_bet_decimal(0.55, even, even, market_weight=0.5, min_edge=0.03).side == "none"
+
+
+def _cand(kind, edge, game="g1", stake=0.02):
+    return {"kind": kind, "edge": edge, "game_id": game,
+            "decision": SimpleNamespace(stake_fraction=stake)}
+
+
+def test_picks_take_the_best_of_each_kind_then_the_biggest_edges():
+    games = [_cand("game", 0.04, "g1"), _cand("game", 0.035, "g2")]
+    props = [_cand("prop", 0.09, "g3"), _cand("prop", 0.08, "g4"), _cand("prop", 0.07, "g5")]
+    chosen = picks.choose(games, props, 3)
+    assert [(c["kind"], c["edge"]) for c in chosen] == [("prop", 0.09), ("prop", 0.08), ("game", 0.04)]
+    # Props alone would fill the card on edge; the game pick is there for the mix.
+    assert [c["kind"] for c in picks.choose(games, props, 2)] == ["prop", "game"]
+
+
+def test_picks_with_one_kind_one_slot_or_none():
+    props = [_cand("prop", 0.09, "g3"), _cand("prop", 0.08, "g4")]
+    games = [_cand("game", 0.05, "g1")]
+    assert len(picks.choose([], props, 3)) == 2                     # fewer candidates than slots
+    assert picks.choose(games, props, 1)[0]["edge"] == 0.09         # one slot: simply the best
+    assert picks.choose(games, props, 0) == []                      # day's quota already used
+
+
+def test_picks_cap_the_stake_on_any_one_game():
+    chosen = picks.choose([_cand("game", 0.05, "g1", stake=0.03)],
+                          [_cand("prop", 0.09, "g1", stake=0.04)], 3)
+    assert [c["decision"].stake_fraction for c in chosen] == [0.04, 0.01]   # 5% on the game in all
+
+
+def test_game_bet_skips_an_edge_too_large_to_trust():
+    d = decide_bet_decimal(0.54, american_to_decimal(457), american_to_decimal(-650),
+                           market_weight=0.75, min_edge=0.025, max_edge=0.0625)
+    assert d.side == "none" and "too large" in d.reason

@@ -9,8 +9,8 @@
         <string>__REPO__/scripts/run_phase.sh</string>
         <string>pregame</string>
     </array>
-    <!-- Late morning: bet EARLY so the line has hours to move toward us before the
-         mid-afternoon `odds` capture marks the close (that gap is where CLV comes from).
+    <!-- Morning: refresh data and news and have Claude predict each game, well before
+         the afternoon run turns those predictions into picks.
          Hour is LOCAL machine time (defaults assume a PT machine). -->
     <key>StartCalendarInterval</key>
     <dict>

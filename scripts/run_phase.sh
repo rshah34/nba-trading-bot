@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Run one daily pipeline phase under a scheduler (launchd/cron), logging to a
-# dated file. Usage: run_phase.sh {pregame|props-early|props|close|postgame}
+# dated file. Usage: run_phase.sh pregame|props-early|props|close|postgame
 #
 # Built for a laptop that is often asleep at the scheduled time. launchd fires
 # every missed job at once on the next wake, so this wrapper:
@@ -15,10 +15,10 @@ PHASE="${1:?usage: run_phase.sh pregame|props-early|props|close|postgame}"
 # The number is the order phases run in when several are due at the same moment.
 case "$PHASE" in
   postgame)    ORDER=1; CMD=(daily-postgame) ;;   # finals -> mark-closing -> evaluate -> settle -> text
-  pregame)     ORDER=2; CMD=(daily-pregame) ;;    # ingest + news -> game odds -> predict -> bet games
+  pregame)     ORDER=2; CMD=(daily-pregame) ;;    # ingest + news -> predict each game
   # Afternoon tips only: games starting before the main props run would see them.
   props-early) ORDER=3; CMD=(daily-props --window-hours 4.25) ;;
-  props)       ORDER=4; CMD=(daily-props) ;;      # injuries + news -> prop odds -> bet props -> text
+  props)       ORDER=4; CMD=(daily-props) ;;      # injuries + news -> odds -> the day's picks -> text
   close)       ORDER=5; CMD=(daily-close) ;;      # near-tip snapshot -> the closing prices CLV uses
   *) echo "unknown phase: $PHASE (expected pregame|props-early|props|close|postgame)" >&2; exit 2 ;;
 esac
