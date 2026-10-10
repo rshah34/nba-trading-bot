@@ -41,6 +41,12 @@ def embed_documents(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
+def embed_once(texts: list[str]) -> list[list[float]]:
+    """Embed one batch of stored content with no retries — for callers that pace
+    themselves against a rate limit, where a blind retry just burns the quota."""
+    return _embed.__wrapped__(texts, "document")
+
+
 def embed_query(text: str) -> list[float]:
     """Embed a single search query."""
     return _embed([text], "query")[0]

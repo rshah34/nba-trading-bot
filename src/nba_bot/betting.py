@@ -145,3 +145,109 @@ def simulate_paper_trade(bets: list[dict], starting_bankroll: float = 1.0) -> Pa
         avg_clv=round(sum(clvs) / len(clvs), 4) if clvs else None,
         clv_positive_rate=round(sum(1 for c in clvs if c > 0) / len(clvs), 3) if clvs else None,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Player props.
+# --------------------------------------------------------------------------- #
+@dataclass
+class PropQuote:
+    """One book's two-way price on one player line."""
+
+    sportsbook: str
+    line: float
+    over_decimal: float
+    under_decimal: float
+
+
+@dataclass
+class PropDecision:
+    side: str                  # "over" | "under"
+    sportsbook: str            # the book with the best price on that side
+    line: float
+    decimal_odds: float
+    n_books: int               # books quoting this exact line (consensus depth)
+    model_prob: float          # raw model probability of the side winning
+    market_prob: float         # de-vigged consensus probability of the side
+    bet_prob: float            # model blended toward the market — what we size on
+    edge: float                # bet_prob − market_prob
+    expected_value: float      # EV per unit staked at the price taken
+    stake_fraction: float
+
+
+def decide_prop(
+    quotes: list[PropQuote],
+    probs_at,
+    *,
+    market_weight: float = 0.5,
+    min_edge: float = 0.03,
+    max_edge: float = 0.10,
+    min_books: int = 2,
+    kelly_multiplier: float = 0.25,
+    max_stake: float = 0.02,
+) -> PropDecision | None:
+    """Pick the best bet (if any) on one player-market across books and lines.
+
+    `probs_at(line)` returns the model's (P(over), P(under), P(push)) at a line, so
+    books hanging different numbers are each judged on their own line.
+
+    Three guards, each there because the model is unproven against real books:
+
+    * **Blend toward the market.** The line is itself a strong forecast, so we size
+      on `market_weight` × market + the rest × model rather than on the raw model.
+    * **Consensus, then best price.** Fair probability is the de-vigged average
+      across the books quoting the same line (`min_books` of them — a line only one
+      book hangs is usually stale or limited); the bet goes to the best price.
+    * **Too-good-to-be-true cap.** A blended edge above `max_edge` (a raw model
+      gap twice that) almost always means the model is missing something — an
+      injury, a role change — not that several books are that wrong at once.
+
+    Stake is fractional Kelly on the blended probability, push-aware, capped.
+    """
+    by_line: dict[float, list[PropQuote]] = {}
+    for q in quotes:
+        if q.over_decimal > 1 and q.under_decimal > 1:
+            by_line.setdefault(q.line, []).append(q)
+
+    best: PropDecision | None = None
+    for line, group in by_line.items():
+        if len(group) < min_books:
+            continue
+        fair = [devig_two_way(1 / q.over_decimal, 1 / q.under_decimal) for q in group]
+        fair_over = sum(f[0] for f in fair) / len(fair)
+        p_over, p_under, p_push = probs_at(line)
+        live = 1 - p_push  # condition on the bet not pushing, to match a two-way price
+        if live <= 0:
+            continue
+        for side, model, market in (
+            ("over", p_over / live, fair_over),
+            ("under", p_under / live, 1 - fair_over),
+        ):
+            bet_prob = market_weight * market + (1 - market_weight) * model
+            edge = bet_prob - market
+            if edge < min_edge or edge > max_edge:
+                continue
+            quote = max(group, key=lambda q: q.over_decimal if side == "over" else q.under_decimal)
+            odds = quote.over_decimal if side == "over" else quote.under_decimal
+            win, lose = bet_prob * live, (1 - bet_prob) * live
+            ev = win * (odds - 1) - lose
+            if ev <= 0:
+                continue
+            stake = min(max((win * (odds - 1) - lose) / (odds - 1), 0.0) * kelly_multiplier,
+                        max_stake)
+            d = PropDecision(side, quote.sportsbook, line, round(odds, 3), len(group),
+                             round(model, 4), round(market, 4), round(bet_prob, 4),
+                             round(edge, 4), round(ev, 4), round(stake, 4))
+            if best is None or d.expected_value > best.expected_value:
+                best = d
+    return best
+
+
+def settle_prop(side: str, line: float, actual: float, decimal_odds: float,
+                stake_fraction: float) -> tuple[str, float]:
+    """(result, pnl) for a prop bet. A whole-number line landed exactly is a push."""
+    if actual == line:
+        return "push", 0.0
+    won = (actual > line) == (side == "over")
+    return ("won", round(stake_fraction * (decimal_odds - 1), 4)) if won else (
+        "lost", round(-stake_fraction, 4))

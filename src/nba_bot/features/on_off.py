@@ -34,7 +34,7 @@ from datetime import date
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
+from nba_bot.db.models import REAL_GAMES, Game, PlayerGameStats, TeamGameStats
 from nba_bot.features.four_factors import _poss
 
 # Below this many games without the player, the split is too noisy to report.
@@ -82,6 +82,7 @@ def _team_games(session: Session, team_id: int, season: str, as_of: date) -> lis
         .where(
             Game.season == season,
             Game.status == "final",
+            REAL_GAMES,
             Game.game_date < as_of,
             or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
         )
@@ -177,6 +178,7 @@ def team_avg_margin_map(session: Session, season: str, as_of: date) -> dict[int,
         .where(
             Game.season == season,
             Game.status == "final",
+            REAL_GAMES,
             Game.game_date < as_of,
             TeamGameStats.plus_minus.is_not(None),
         )

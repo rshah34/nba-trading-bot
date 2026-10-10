@@ -20,7 +20,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from nba_bot.db.models import Game, TeamGameStats
+from nba_bot.db.models import REAL_GAMES, Game, TeamGameStats
 
 
 @dataclass
@@ -56,6 +56,7 @@ def team_four_factors(session: Session, team_id: int, as_of: date, n: int = 10) 
         .where(
             TeamGameStats.team_id == team_id,
             Game.status == "final",
+            REAL_GAMES,
             Game.game_date < as_of,
             TeamGameStats.fga.is_not(None),  # skip games not yet backfilled with raw counts
         )

@@ -109,3 +109,54 @@ class BetsSummary(BaseModel):
     final_bankroll: float
     avg_clv: float | None
     clv_positive_rate: float | None
+
+
+class PropBetRow(BaseModel):
+    """One recorded player-prop paper bet and (once settled) its result + CLV."""
+
+    game_id: str
+    game_date: date
+    player_name: str
+    team: str | None
+    market: str                  # Odds API key, e.g. player_points
+    side: str                    # 'over' | 'under'
+    line: float
+    sportsbook: str
+    decimal_odds: float
+    model_prob: float
+    market_prob: float
+    edge: float
+    ev: float
+    stake_fraction: float
+    proj_mean: float
+    proj_minutes: float | None
+    notes: str | None
+    settled: bool
+    result: str | None           # won | lost | push | void
+    actual_value: float | None
+    pnl: float | None
+    clv: float | None
+
+
+class PropLinesReport(BaseModel):
+    """Model vs. market on every line priced (bet or not), by Brier score."""
+
+    n: int
+    brier_model: float
+    brier_market: float
+    brier_blend: float
+
+
+class PropsSummary(BaseModel):
+    n_bets: int
+    n_pending: int
+    wins: int
+    losses: int
+    pushes: int
+    win_rate: float | None
+    roi: float | None
+    units: float
+    avg_clv: float | None
+    clv_positive_rate: float | None
+    lines: PropLinesReport | None = None
+

@@ -1,6 +1,8 @@
-"""ESPN NBA news via RSS (feedparser) + tagging articles to team ids.
+"""NBA news via RSS (feedparser) + tagging articles to team ids.
 
-RSS is free and keyless. Each article is tagged with the team ids it mentions
+RSS is free and keyless. Several feeds are read because they carry different
+things: wire-style reporting, transactions, and the short player-news blurbs
+(minutes limits, lineup changes, rest days) that move player props. Each article is tagged with the team ids it mentions
 by scanning its text for team nicknames, so retrieval can later filter news down
 to the two teams in a matchup.
 
@@ -15,6 +17,7 @@ false-positive tags are possible.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -26,7 +29,18 @@ import httpx
 from nba_api.stats.static import teams as static_teams
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-NBA_RSS_FEEDS = ("https://www.espn.com/espn/rss/nba/news",)
+NBA_RSS_FEEDS = (
+    "https://www.espn.com/espn/rss/nba/news",
+    "https://www.rotowire.com/rss/news.php?sport=NBA",          # player-news blurbs
+    "https://www.rotoballer.com/player-news/feed?sport=nba",    # player-news blurbs
+    "https://basketball.realgm.com/rss/wiretap/0/0.xml",        # wire: transactions, quotes
+    "https://www.hoopsrumors.com/feed",                         # team notes, full text
+    "https://www.cbssports.com/rss/headlines/nba/",
+    "https://sports.yahoo.com/nba/rss/",                        # full text
+    "https://www.nbcsports.com/nba.rss",                        # full text
+)
+
+log = logging.getLogger("nba_bot.news")
 
 _retry = retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 
@@ -74,6 +88,10 @@ def _strip_html(value: str | None) -> str:
 _TRAILING_ELLIPSIS = re.compile(r"\s*(?:\.\.\.|…)\s*$")
 # ESPN page <title> tags carry a " - ESPN" suffix; og:title does not.
 _TITLE_SITE_SUFFIX = re.compile(r"\s*[-|]\s*ESPN\s*$", re.IGNORECASE)
+
+
+def is_truncated(title: str | None) -> bool:
+    return bool(_TRAILING_ELLIPSIS.search(title or ""))
 
 
 def _clean_title(title: str | None) -> str:
@@ -135,19 +153,35 @@ def _fetch_feed(url: str) -> feedparser.FeedParserDict:
     return feedparser.parse(resp.content)
 
 
+def _body(entry) -> str:
+    """Full article text when the feed carries it, else the summary."""
+    content = entry.get("content") or []
+    full = _strip_html(content[0].get("value")) if content else ""
+    summary = _strip_html(entry.get("summary"))
+    return full if len(full) > len(summary) else summary
+
+
 def fetch_entries(feed_urls: tuple[str, ...] = NBA_RSS_FEEDS) -> list[FeedEntry]:
-    """Fetch and normalize entries from the configured NBA RSS feeds."""
+    """Fetch and normalize entries from the configured NBA RSS feeds.
+
+    One feed being down must not cost the others, so failures are logged and skipped.
+    """
     entries: list[FeedEntry] = []
     for url in feed_urls:
-        parsed = _fetch_feed(url)
-        source = parsed.feed.get("title", url)
+        try:
+            parsed = _fetch_feed(url)
+        except Exception as exc:  # noqa: BLE001 — a dead feed is routine, not fatal
+            log.warning("feed failed: %s (%s)", url, exc)
+            continue
+        # Some feeds (Yahoo) publish no channel title; the host names them instead.
+        source = parsed.feed.get("title") or httpx.URL(url).host
         for e in parsed.entries:
             entries.append(
                 FeedEntry(
                     source=source,
                     url=e.get("link", ""),
                     title=_strip_html(e.get("title")),
-                    summary=_strip_html(e.get("summary")),
+                    summary=_body(e),
                     published_at=_published_at(e),
                 )
             )

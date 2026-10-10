@@ -121,3 +121,83 @@ def parse_event(event: dict) -> OddsEvent:
         away_team=away,
         books=books,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Player props. Not in the bulk feed — one request per event, and each request
+# costs (markets returned × regions) credits. A full 12-market slate is ~12 credits
+# a game, so props need a paid plan; the free tier's 500/month lasts about 4 nights.
+# --------------------------------------------------------------------------- #
+@dataclass
+class PropOffer:
+    """One book's over/under on one player line."""
+
+    sportsbook: str
+    market: str
+    player: str
+    line: float
+    over_price: int | None = None
+    under_price: int | None = None
+
+
+@_retry
+def fetch_events(api_key: str) -> list[dict]:
+    """Upcoming NBA events (id, teams, commence_time). Free — no quota cost."""
+    resp = httpx.get(
+        f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events",
+        params={"apiKey": api_key, "dateFormat": "iso"},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+@_retry
+def fetch_event_props(
+    api_key: str, event_id: str, markets: tuple[str, ...], regions: str = "us"
+) -> tuple[dict, dict[str, str | None]]:
+    """Player-prop odds for one event. Returns (raw_event, quota_headers)."""
+    resp = httpx.get(
+        f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events/{event_id}/odds",
+        params={
+            "apiKey": api_key,
+            "regions": regions,
+            "markets": ",".join(markets),
+            "oddsFormat": "american",
+            "dateFormat": "iso",
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    quota = {
+        "remaining": resp.headers.get("x-requests-remaining"),
+        "used": resp.headers.get("x-requests-used"),
+        "last": resp.headers.get("x-requests-last"),
+    }
+    return resp.json(), quota
+
+
+def parse_event_props(event: dict) -> list[PropOffer]:
+    """Flatten one event's prop markets into per-book over/under offers. No network.
+
+    Each outcome is {name: Over|Under, description: <player>, price, point}; the two
+    sides of a line are paired on (player, point).
+    """
+    offers: dict[tuple[str, str, str, float], PropOffer] = {}
+    for bm in event.get("bookmakers", []):
+        book = bm.get("key", "unknown")
+        for market in bm.get("markets", []):
+            key = market.get("key")
+            for o in market.get("outcomes", []):
+                player, point, side = o.get("description"), o.get("point"), o.get("name")
+                if not player or point is None or side not in ("Over", "Under"):
+                    continue
+                offer = offers.setdefault(
+                    (book, key, player, float(point)),
+                    PropOffer(sportsbook=book, market=key, player=player, line=float(point)),
+                )
+                if side == "Over":
+                    offer.over_price = o.get("price")
+                else:
+                    offer.under_price = o.get("price")
+    return list(offers.values())

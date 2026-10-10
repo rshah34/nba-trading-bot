@@ -82,24 +82,39 @@ def predict(
 
 @app.command()
 def daily_pregame():
-    """Pre-game phase: ingest data/injuries/results → capture odds → predict → record bets."""
+    """Pre-game phase: ingest data/injuries/results/news → capture odds → predict → record bets."""
+    _run_phase("pregame", pipeline.run_pregame)
+
+
+def _run_phase(name: str, fn) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with SessionLocal() as session:
-        result = pipeline.run_pregame(session)
-    entry = pipeline.append_run_log("pregame", result)
+        result = fn(session)
+    entry = pipeline.append_run_log(name, result)
     rprint(result)
     rprint(f"[{'green' if entry['ok'] else 'yellow'}]run {'ok' if entry['ok'] else 'had failures'}:[/] {entry['steps']}")
 
 
 @app.command()
+def daily_props(
+    window_hours: float = typer.Option(
+        0, help="Only games tipping within this many hours (the early run). 0 = whole slate."),
+):
+    """Props phase: injuries + news → signals → prop odds → prop bets → text the best bets."""
+    window = window_hours or None
+    _run_phase("props", lambda session: pipeline.run_props(session, window_hours=window))
+
+
+@app.command()
+def daily_close():
+    """Closing snapshot: game lines + the prop markets we hold bets in (for CLV)."""
+    _run_phase("close", pipeline.run_close)
+
+
+@app.command()
 def daily_postgame():
-    """Post-game phase: ingest final results/box scores → mark closing → evaluate → settle bets."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    with SessionLocal() as session:
-        result = pipeline.run_postgame(session)
-    entry = pipeline.append_run_log("postgame", result)
-    rprint(result)
-    rprint(f"[{'green' if entry['ok'] else 'yellow'}]run {'ok' if entry['ok'] else 'had failures'}:[/] {entry['steps']}")
+    """Post-game phase: final results/box scores → mark closing → evaluate → settle → text results."""
+    _run_phase("postgame", pipeline.run_postgame)
 
 
 @app.command()
@@ -229,6 +244,138 @@ def bets(
            f"(beat the close {rec['clv_positive_rate']:.0%} of the time)  ← north star")
     rprint(f"  win rate: {rec['win_rate']:.1%}   ROI: {rec['roi']:+.1%}   "
            f"bankroll: {rec['final_bankroll']:.3f}× start")
+
+
+@app.command()
+def props_backtest(
+    season: str = typer.Option("2025-26", help="Season to replay."),
+    start: str = typer.Option("", help="First date scored (YYYY-MM-DD); earlier games are warm-up."),
+    availability: str = typer.Option(
+        "all", help="none | last_game | oracle | all. See backtest/props_backtest.py."),
+):
+    """Score the prop projection model on a full season. Free — no API calls."""
+    from nba_bot.backtest import props_backtest as pb
+    from nba_bot.features.props import MARKET_LABELS, load_props_data
+
+    with SessionLocal() as session:
+        data = load_props_data(session)
+    first = date.fromisoformat(start) if start else None
+    modes = ("none", "last_game", "oracle") if availability == "all" else (availability,)
+    for mode in modes:
+        stats = pb.run_backtest(data, season, availability=mode, start=first)
+        n = sum(st.n for st in stats.values()) or 1
+        rprint(f"\n[bold]availability = {mode}[/bold]  "
+               f"pooled MAE {sum(st.abs_model for st in stats.values()) / n:.4f} "
+               f"(last-10 avg {sum(st.abs_l10 for st in stats.values()) / n:.4f})  "
+               f"Brier {sum(st.brier for st in stats.values()) / n:.4f} "
+               f"(naive {sum(st.brier_naive for st in stats.values()) / n:.4f})")
+        if mode != modes[-1]:
+            continue
+        for market, st in stats.items():
+            r = st.summary()
+            rprint(f"  {MARKET_LABELS[market]:12} n={r['n']:>6}  MAE {r['mae_model']:.3f} "
+                   f"(L10 {r['mae_l10']:.3f}, season {r['mae_season']:.3f})  bias {r['bias']:+.3f}  "
+                   f"φ {r['phi']}  Brier {r['brier']:.4f} vs {r['brier_naive']:.4f}")
+        rprint("[bold]calibration — predicted P(over) vs. how often it went over:[/bold]")
+        for row in pb.calibration(stats):
+            rprint(f"  {row['bin']}  n={row['n']:>6}  predicted={row['predicted']:.3f}  "
+                   f"actual={row['actual']:.3f}")
+    rprint("[dim]Lines here are each player's trailing-10 average, not a sportsbook's — this "
+           "measures projection quality, not edge. Edge is only measurable live, via CLV.[/dim]")
+
+
+@app.command()
+def props(
+    game_date: str = typer.Option("", help="Date to price (YYYY-MM-DD). Defaults to today."),
+    dry_run: bool = typer.Option(True, "--dry-run/--record", help="Preview (default) or record bets."),
+    refresh_odds: bool = typer.Option(False, "--refresh-odds", help="Buy a fresh prop-odds snapshot first."),
+    preseason: bool = typer.Option(False, "--preseason", help="Include preseason games (rehearsal only)."),
+):
+    """Price today's player props and show the best bets."""
+    from nba_bot.agents import props_agent
+    from nba_bot.features.props import MARKET_LABELS
+
+    target = date.fromisoformat(game_date) if game_date else date.today()
+    with SessionLocal() as session:
+        if refresh_odds:
+            rprint("[cyan]prop odds:[/cyan]", props_agent.sync_prop_odds(session, include_preseason=preseason))
+        result = props_agent.record_prop_bets(session, target, dry_run=dry_run, include_preseason=preseason)
+    rprint(f"{result['candidates']} candidate(s) cleared the edge threshold; "
+           f"{len(result['bets'])} selected"
+           + ("" if dry_run else f", {result['placed']} recorded") + ".")
+    for b in result["bets"]:
+        d = b["decision"]
+        rprint(f"[bold]{b['player_name']}[/bold] ({b['team']}, {b['matchup']})  "
+               f"[cyan]{d.side.upper()} {d.line:g} {MARKET_LABELS[b['market']]}[/cyan] "
+               f"@ {d.decimal_odds} {d.sportsbook}  proj {b['proj_mean']:.1f} in {b['proj_minutes']:.0f}m  "
+               f"model {d.model_prob:.0%} vs mkt {d.market_prob:.0%}  EV {d.expected_value:+.1%}  "
+               f"stake {d.stake_fraction:.2%}")
+        for note in b["notes"]:
+            rprint(f"       [dim]{note}[/dim]")
+
+
+@app.command()
+def props_record():
+    """Paper record on player props: bets (CLV first) and the model vs. the market."""
+    from nba_bot.agents import props_agent
+
+    with SessionLocal() as session:
+        rec = props_agent.track_record(session)
+    if not rec["n_bets"] and "lines" not in rec:
+        rprint("[yellow]No settled prop bets or scored lines yet.[/yellow]")
+        return
+    if rec["n_bets"]:
+        clv = (f"{rec['avg_clv'] * 100:+.2f} pts (beat the close {rec['clv_positive_rate']:.0%})"
+               if rec["avg_clv"] is not None else "n/a")
+        rprint(f"[bold]Prop bets[/bold]: {rec['wins']}-{rec['losses']}-{rec['pushes']}  "
+               f"{rec['units']:+.1f}u  ROI {rec['roi']:+.1%}  avg CLV [cyan]{clv}[/cyan]")
+    if "lines" in rec:
+        ln = rec["lines"]
+        rprint(f"[bold]Every priced line[/bold] (n={ln['n']}): Brier model {ln['brier_model']} | "
+               f"market {ln['brier_market']} | 50/50 blend {ln['brier_blend']}")
+        rprint("[dim]The blend beating the market is the evidence the model adds information.[/dim]")
+
+
+@app.command()
+def extract_signals():
+    """Read new articles into structured player signals (minutes limits, role changes)."""
+    from nba_bot.agents import news_agent
+
+    with SessionLocal() as session:
+        rprint("[green]News signals:[/green]", news_agent.extract_signals(session))
+
+
+@app.command()
+def digest(
+    game_date: str = typer.Option("", help="Date (YYYY-MM-DD). Defaults to today."),
+    results: bool = typer.Option(False, "--results", help="Show the results text instead."),
+    send: bool = typer.Option(False, "--send", help="Deliver it on the configured channels."),
+):
+    """Print (and optionally send) the best-bets or results text."""
+    from nba_bot import digest as digest_mod
+    from nba_bot import notify
+
+    target = date.fromisoformat(game_date) if game_date else date.today()
+    with SessionLocal() as session:
+        text = digest_mod.results(session) if results else digest_mod.best_bets(session, target)
+    if text is None:
+        rprint("[yellow]Nothing settled recently.[/yellow]")
+        return
+    print(text)
+    if send:
+        rprint(notify.send(text, "NBA results" if results else "NBA best bets"))
+
+
+@app.command()
+def notify_test():
+    """Send a test message on every configured channel."""
+    from nba_bot import notify
+
+    if not notify.channels():
+        rprint("[yellow]No channels configured. Set NOTIFY_CHANNELS in .env "
+               "(imessage and/or ntfy) — see scripts/SCHEDULING.md.[/yellow]")
+        return
+    rprint(notify.send("NBA bot test: notifications are working.", "NBA bot test", kind="test"))
 
 
 @app.command()

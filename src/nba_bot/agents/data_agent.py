@@ -4,7 +4,7 @@ for completed games. Run via `nba-bot ingest` (see cli/main.py).
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -67,6 +67,20 @@ def sync_teams(session: Session) -> int:
     return count
 
 
+def _to_int(v) -> int | None:
+    # A frame mixing final and unplayed games carries NaN, not None, for the latter.
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_datetime(v) -> datetime | None:
+    if v is None or v != v:  # NaT/NaN compare unequal to themselves
+        return None
+    return v.to_pydatetime() if hasattr(v, "to_pydatetime") else v
+
+
 def _last_game_date_before(session: Session, team_id: int, before: date) -> date | None:
     stmt = (
         select(Game.game_date)
@@ -98,20 +112,22 @@ def sync_games_for_date(session: Session, game_date: date) -> int:
                 game_date=g["game_date"],
                 home_team_id=int(g["home_team_id"]),
                 away_team_id=int(g["away_team_id"]),
-                home_score=int(g["home_score"]) if g["home_score"] is not None else None,
-                away_score=int(g["away_score"]) if g["away_score"] is not None else None,
+                home_score=_to_int(g["home_score"]),
+                away_score=_to_int(g["away_score"]),
                 status=g["status"],
                 home_rest_days=home_rest,
                 away_rest_days=away_rest,
                 is_back_to_back_home=home_rest == 0,
                 is_back_to_back_away=away_rest == 0,
+                tipoff_at=_to_datetime(g["tipoff_at"]),
             )
             .on_conflict_do_update(
                 index_elements=[Game.game_id],
                 set_={
-                    "home_score": int(g["home_score"]) if g["home_score"] is not None else None,
-                    "away_score": int(g["away_score"]) if g["away_score"] is not None else None,
+                    "home_score": _to_int(g["home_score"]),
+                    "away_score": _to_int(g["away_score"]),
                     "status": g["status"],
+                    "tipoff_at": _to_datetime(g["tipoff_at"]),
                 },
             )
         )
@@ -148,13 +164,6 @@ def sync_injuries(session: Session) -> int:
             count += 1
     session.commit()
     return count
-
-
-def _to_int(v) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _pct(made, attempted) -> float | None:
@@ -200,10 +209,11 @@ def store_box_score(session: Session, game_id: str) -> dict:
                 plus_minus=float(r["plusMinusPoints"]) if r["plusMinusPoints"] is not None else None,
             )
             .on_conflict_do_nothing(index_elements=[PlayerGameStats.game_id, PlayerGameStats.player_id])
+            .returning(PlayerGameStats.player_id)
         )
-        # ON CONFLICT DO NOTHING reports rowcount -1 (psycopg) on an existing row;
-        # clamp so the count reflects genuinely-inserted rows, not conflicts.
-        player_rows += max(session.execute(stmt).rowcount or 0, 0)
+        # RETURNING yields a row only on a real insert; psycopg's rowcount for
+        # ON CONFLICT DO NOTHING is -1 either way, which counted every insert as 0.
+        player_rows += session.execute(stmt).first() is not None
 
     team_rows = 0
     for _, r in team_df.iterrows():
@@ -292,9 +302,15 @@ def sync_odds(session: Session, markets: tuple[str, ...] = odds_api.DEFAULT_MARK
     events, quota = odds_api.fetch_nba_odds(settings.odds_api_key, markets)
     index = _build_game_index(session)
 
-    inserted, unmatched = 0, 0
+    inserted, unmatched, live = 0, 0, 0
+    now = datetime.now(timezone.utc)
     for raw in events:
         ev = odds_api.parse_event(raw)
+        if ev.commence_time <= now:
+            # The feed keeps listing games in progress with in-play prices; storing
+            # one would make it the "closing line" and corrupt every CLV number.
+            live += 1
+            continue
         home_id = resolve_team_id(ev.home_team)
         away_id = resolve_team_id(ev.away_team)
         if home_id is None or away_id is None:
@@ -321,7 +337,8 @@ def sync_odds(session: Session, markets: tuple[str, ...] = odds_api.DEFAULT_MARK
             )
             inserted += 1
     session.commit()
-    return {"events": len(events), "odds_rows": inserted, "unmatched_events": unmatched, "quota": quota}
+    return {"events": len(events), "odds_rows": inserted, "unmatched_events": unmatched,
+            "skipped_live": live, "quota": quota}
 
 
 def mark_closing_lines(session: Session) -> int:
@@ -350,15 +367,26 @@ def mark_closing_lines(session: Session) -> int:
     return marked
 
 
-def run_nightly(session: Session) -> dict:
-    """Full nightly ingestion: teams, today's + tomorrow's games, injuries, recent box scores."""
+def run_nightly(session: Session, lookback_days: int = 2) -> dict:
+    """Full ingestion: teams, recent + today's + tomorrow's games, injuries, box scores.
+
+    The previous days are re-synced on purpose: the postgame run happens the morning
+    after, when "today" no longer covers last night's slate, so without the lookback
+    a finished game would stay `scheduled` forever and nothing would ever settle.
+    """
     teams = sync_teams(session)
-    games_today = sync_games_for_date(session, date.today())
-    games_tomorrow = sync_games_for_date(session, date.today() + timedelta(days=1))
+    today = date.today()
+    games_recent = sum(
+        sync_games_for_date(session, today - timedelta(days=d))
+        for d in range(lookback_days, 0, -1)
+    )
+    games_today = sync_games_for_date(session, today)
+    games_tomorrow = sync_games_for_date(session, today + timedelta(days=1))
     injuries = sync_injuries(session)
-    recent = backfill_recent_stats(session)
+    recent = backfill_recent_stats(session, lookback_days=lookback_days + 1)
     return {
         "teams": teams,
+        "games_recent": games_recent,
         "games_today": games_today,
         "games_tomorrow": games_tomorrow,
         "injuries": injuries,

@@ -73,3 +73,56 @@ def test_simulate_paper_trade_tracks_bankroll_and_clv():
 def test_simulate_paper_trade_empty():
     res = simulate_paper_trade([])
     assert res.n_bets == 0 and res.final_bankroll == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Player props.
+# --------------------------------------------------------------------------- #
+from nba_bot.betting import PropQuote, decide_prop, settle_prop  # noqa: E402
+
+
+def _quotes(*lines_and_prices):
+    return [PropQuote(book, line, american_to_decimal(over), american_to_decimal(under))
+            for book, line, over, under in lines_and_prices]
+
+
+def _flat(p_over):
+    return lambda line: (p_over, 1 - p_over, 0.0)
+
+
+def test_decide_prop_blends_toward_the_market_and_takes_the_best_price():
+    quotes = _quotes(("dk", 24.5, -110, -110), ("fd", 24.5, -105, -115), ("mgm", 24.5, -112, -108))
+    d = decide_prop(quotes, _flat(0.62))
+    assert d.side == "over" and d.sportsbook == "fd"          # best over price
+    assert d.n_books == 3
+    assert d.market_prob < d.bet_prob < d.model_prob          # sized on the blend
+    assert d.edge == round(d.bet_prob - d.market_prob, 4)
+    assert 0 < d.stake_fraction <= 0.02
+
+
+def test_decide_prop_bets_the_under_when_the_model_is_low():
+    d = decide_prop(_quotes(("dk", 24.5, -110, -110), ("fd", 24.5, -110, -110)), _flat(0.36))
+    assert d.side == "under"
+
+
+def test_decide_prop_guards():
+    two = _quotes(("dk", 24.5, -110, -110), ("fd", 24.5, -110, -110))
+    assert decide_prop(two, _flat(0.53)) is None              # edge too small after blending
+    assert decide_prop(two, _flat(0.95)) is None              # too good to be true
+    assert decide_prop(two[:1], _flat(0.62)) is None          # one book is not a market
+    # Books on different lines are separate markets: neither has two quotes here.
+    split = _quotes(("dk", 24.5, -110, -110), ("fd", 25.5, -110, -110))
+    assert decide_prop(split, _flat(0.62)) is None
+
+
+def test_decide_prop_judges_each_line_on_its_own_probability():
+    quotes = _quotes(("dk", 24.5, -110, -110), ("fd", 24.5, -110, -110),
+                     ("mgm", 26.5, -110, -110), ("czr", 26.5, -110, -110))
+    d = decide_prop(quotes, lambda line: (0.60, 0.40, 0.0) if line < 25 else (0.42, 0.58, 0.0))
+    assert (d.side, d.line) == ("over", 24.5)                 # the bigger disagreement
+
+
+def test_settle_prop():
+    assert settle_prop("over", 24.5, 27, 1.9, 0.01) == ("won", 0.009)
+    assert settle_prop("under", 24.5, 27, 1.9, 0.01) == ("lost", -0.01)
+    assert settle_prop("under", 5.0, 5, 1.9, 0.01) == ("push", 0.0)

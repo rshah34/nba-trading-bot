@@ -7,13 +7,13 @@ residential connection but may 403/timeout from cloud CI or hosted dev sandboxes
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 from nba_api.stats.endpoints import (
     boxscoretraditionalv3,
     leaguegamefinder,
-    scoreboardv2,
+    scoreboardv3,
 )
 from nba_api.stats.static import teams as static_teams
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -26,27 +26,60 @@ def get_all_teams() -> list[dict]:
     return static_teams.get_teams()
 
 
+# nba.com game ids encode the game type in their first three digits.
+PRESEASON_PREFIX = "001"
+
+
+def is_preseason(game_id: str) -> bool:
+    """Preseason games (id prefix 001) are exhibition minutes — never treat them
+    as evidence about a team's or player's regular-season level."""
+    return str(game_id).startswith(PRESEASON_PREFIX)
+
+
+def _parse_utc(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
 @_retry
 def get_scoreboard(game_date: date) -> pd.DataFrame:
-    """Games scheduled/played on a given date, with home/away team ids and final scores."""
-    sb = scoreboardv2.ScoreboardV2(game_date=game_date.strftime("%Y-%m-%d"))
-    header = sb.game_header.get_data_frame()
-    line_score = sb.line_score.get_data_frame()
+    """Games scheduled/played on a given date, with home/away team ids, final
+    scores, and the tip-off instant.
 
-    scores = line_score.set_index(["GAME_ID", "TEAM_ID"])["PTS"]
+    Uses ScoreboardV3 — V2 went stale for 2026-27 (finished games stay at status 1
+    with an empty line score, so nothing would ever resolve). V3 has no explicit
+    home/visitor ids; `gameCode` is `YYYYMMDD/AWYHOM`, so the home side is the
+    team whose tricode ends the code.
+    """
+    sb = scoreboardv3.ScoreboardV3(game_date=game_date.strftime("%Y-%m-%d"))
+    frames = sb.get_data_frames()
+    header, teams = frames[1], frames[2]
 
     rows = []
     for _, g in header.iterrows():
-        home_id, away_id = g["HOME_TEAM_ID"], g["VISITOR_TEAM_ID"]
+        sides = teams[teams["gameId"] == g["gameId"]]
+        if len(sides) != 2:
+            continue
+        home_code = str(g["gameCode"])[-3:]
+        home = sides[sides["teamTricode"] == home_code]
+        away = sides[sides["teamTricode"] != home_code]
+        if home.empty or away.empty:
+            continue
+        home, away = home.iloc[0], away.iloc[0]
+        final = int(g["gameStatus"]) == 3
         rows.append(
             {
-                "game_id": g["GAME_ID"],
+                "game_id": g["gameId"],
                 "game_date": game_date,
-                "home_team_id": home_id,
-                "away_team_id": away_id,
-                "home_score": scores.get((g["GAME_ID"], home_id)),
-                "away_score": scores.get((g["GAME_ID"], away_id)),
-                "status": "final" if g["GAME_STATUS_ID"] == 3 else "scheduled",
+                "home_team_id": int(home["teamId"]),
+                "away_team_id": int(away["teamId"]),
+                # A not-yet-played game reports score 0, not null.
+                "home_score": int(home["score"]) if final else None,
+                "away_score": int(away["score"]) if final else None,
+                "status": "final" if final else "scheduled",
+                "tipoff_at": _parse_utc(g["gameTimeUTC"]),
             }
         )
     return pd.DataFrame(rows)

@@ -96,3 +96,42 @@ def test_parse_event_tolerates_missing_markets():
     assert book.sportsbook == "fanduel"
     assert book.home_moneyline is None
     assert book.total_points is None
+
+
+# Shape of GET /v4/sports/basketball_nba/events/{id}/odds for player props, as
+# returned live (outcome.description carries the player, outcome.point the line).
+SAMPLE_PROPS = {
+    "id": "e1a2b3c4",
+    "home_team": "Detroit Pistons",
+    "away_team": "Boston Celtics",
+    "bookmakers": [
+        {"key": "fanduel", "markets": [
+            {"key": "player_points", "outcomes": [
+                {"name": "Over", "description": "Jayson Tatum", "price": -114, "point": 26.5},
+                {"name": "Under", "description": "Jayson Tatum", "price": -114, "point": 26.5},
+                {"name": "Over", "description": "Cade Cunningham", "price": -106, "point": 24.5},
+                {"name": "Under", "description": "Cade Cunningham", "price": -125, "point": 24.5},
+            ]},
+            {"key": "player_rebounds", "outcomes": [
+                {"name": "Over", "description": "Jayson Tatum", "price": -144, "point": 8.5},
+            ]},
+        ]},
+        {"key": "draftkings", "markets": [
+            {"key": "player_points", "outcomes": [
+                {"name": "Over", "description": "Jayson Tatum", "price": -110, "point": 27.5},
+                {"name": "Under", "description": "Jayson Tatum", "price": -110, "point": 27.5},
+            ]},
+        ]},
+    ],
+}
+
+
+def test_parse_event_props_pairs_the_two_sides_of_each_line():
+    offers = {(o.sportsbook, o.market, o.player): o for o in odds_api.parse_event_props(SAMPLE_PROPS)}
+    assert len(offers) == 4
+    tatum = offers[("fanduel", "player_points", "Jayson Tatum")]
+    assert (tatum.line, tatum.over_price, tatum.under_price) == (26.5, -114, -114)
+    # Books hang different numbers; each keeps its own line.
+    assert offers[("draftkings", "player_points", "Jayson Tatum")].line == 27.5
+    # A one-sided market survives parsing with the missing side empty.
+    assert offers[("fanduel", "player_rebounds", "Jayson Tatum")].under_price is None

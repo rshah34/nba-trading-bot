@@ -19,6 +19,27 @@ class Settings(BaseSettings):
 
     analysis_model: str = "claude-sonnet-5"
     embedding_model: str = "voyage-3"
+    # Reads the day's news into structured player signals (minutes limits, role
+    # changes, absences). A few calls a day.
+    news_model: str = "claude-opus-5-5"
+
+    # Player props. Each market costs one Odds API credit per game per snapshot.
+    prop_markets: str = (
+        "player_points,player_rebounds,player_assists,player_threes,"
+        "player_points_rebounds_assists,player_points_rebounds,player_points_assists,"
+        "player_rebounds_assists,player_steals,player_blocks,player_blocks_steals,"
+        "player_turnovers"
+    )
+    # Stop buying prop snapshots once the Odds API quota falls to this many credits,
+    # so game lines (the CLV record) never get starved.
+    odds_quota_reserve: int = 50
+
+    # Notifications: comma-separated channels from {imessage, ntfy}. Empty = log only.
+    notify_channels: str = ""
+    notify_imessage_to: str = ""       # phone number or Apple ID that receives the text
+    notify_ntfy_topic: str = ""        # ntfy.sh topic (treat it like a password)
+    notify_ntfy_server: str = "https://ntfy.sh"
+    bankroll: float = 0.0              # optional: shows stakes in dollars in the digest
 
     @computed_field  # type: ignore[prop-decorator]
     @property

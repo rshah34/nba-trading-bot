@@ -8,9 +8,9 @@ about being ready to run a genuine forward track record when it tips off.
 
 ## ✅ Done
 
-- [x] **Data layer** — games/scores/rest (`nba_api`), injuries (ESPN), odds (The Odds API), team + **player** box scores (V3)
+- [x] **Data layer** — games/scores/rest (`nba_api`, ScoreboardV3), injuries (ESPN), game + **player-prop** odds (The Odds API), team + **player** box scores (V3)
 - [x] **Storage** — Postgres + `pgvector`; full schema (teams, games, stats, injuries, odds, news, predictions, evaluations)
-- [x] **News RAG** — RSS → chunk → Voyage embeddings → pgvector → point-in-time cosine retrieval
+- [x] **News RAG** — 8 RSS feeds (full text) → chunk → Voyage embeddings → pgvector → point-in-time cosine retrieval
 - [x] **Analysis Agent** — blind, point-in-time Claude prediction → win prob + edge vs. de-vigged market
 - [x] **Evaluation Agent** — Brier, log-loss, CLV, beat-spread, calibration
 - [x] **Backtesting** — season replay, `--slice`, cost estimate, calibration report, `--tag` for A/B
@@ -31,6 +31,22 @@ Don't predict better — bet only the spots where the calibrated prob disagrees 
 - *Judge by CLV, not short-run P&L.* CLV is the durable edge signal; P&L is variance until n is large.
 - [ ] **Season activation:** once real odds flow, re-fit calibration on live Sonnet predictions (`calibrate --save`), tune `min_edge`/`kelly_multiplier`/`max_stake`, and watch the CLV curve.
 
+## 🎲 Player props + news signals — ✅ **BUILT** (Oct 2026)
+
+- [x] **Projection engine** (`features/props.py`): minutes (4-game half-life) × per-minute rate (20-game) × opponent factor × team **minutes budget**; negative-binomial distribution per market. Twelve markets: PTS, REB, AST, 3PM, STL, BLK, TOV, PRA, PR, PA, RA, BLK+STL.
+- [x] **Season backtest** (`nba-bot props-backtest`, free): on 15k rotation player-games of 2025-26 the model beats trailing-10 and season averages in every market, unbiased, calibrated to ~1–2 pts.
+- [x] **Minutes budget** — the big one. Projected rotation minutes vs. a 234-minute budget; bench players move ~1:1 with the ratio, starters far less. Validated out-of-sample (fit Dec–Jan, tested Feb–Apr).
+- [x] **Finding: availability is everything, and stale availability is worse than none.** Pooled MAE 2.740 with no availability knowledge, **2.703** with the right rotation, **2.747** assuming last game's rotation. Hence props run late, on fresh news.
+- [x] **Rejected:** per-player with/without splits for an absent teammate — worse than no adjustment even with perfect availability (too few games per split).
+- [x] **News signals** (`agents/news_agent.py`): eight feeds with full text → Claude → structured player signals (out / questionable / minutes limit / role up/down / returning) with confidence and expiry, applied to projections.
+- [x] **Decision layer** (`betting.decide_prop`): consensus de-vig across books on the same line, best price, sized on a 50/50 model/market blend, edge capped as a sanity check; one bet per player; per-game and per-day stake caps; no bets on a player's first 5 games with his team; a team with a questionable rotation player is priced both ways and only bets that survive both are kept.
+- [x] **Settlement + CLV** (`agents/props_agent.py`): box-score settlement (void on DNP, push on the number), CLV translated across line moves; every priced line logged (`prop_projections`) so the model is scored against the market on hundreds of lines a night.
+- [x] **Texts** (`notify.py`, `digest.py`): best bets before tip, results next morning; iMessage or ntfy.
+- [x] **Live fixes found on the way:** ScoreboardV2 is stale for 2026-27 (finished games never resolved) → V3; the nightly ingest never re-synced yesterday → finals never arrived; in-play odds could be stored as the "closing line"; recovered players stayed injured forever; preseason games polluted form.
+- [ ] **Season activation:** paid Odds API tier for props, `scripts/schedule.sh install`, `nba-bot notify-test`.
+- [ ] **After ~2 weeks live:** read `nba-bot props-record` — if the 50/50 blend beats the market's Brier on priced lines, the model is adding information; tune `market_weight` / `min_edge` from that, and fit per-market calibration.
+- [ ] **Next:** props panel on the dashboard (API is ready: `/props/bets`, `/props/summary`); "returning player" squeeze from news; alternate lines; a starting-lineup feed nearer tip.
+
 ## 🎯 Before the season (priority)
 
 ### 1. On-off injury-impact feature *(highest value)* — ✅ **BUILT** (`features/on_off.py`)
@@ -50,7 +66,7 @@ Quantifies a player's *real* impact from **with/without splits** rather than rep
 
 ### 3. Scheduling / deployment — ✅ **BUILT** (local launchd; `scripts/`)
 - [x] Chose **local** over cloud: `nba_api` blocks datacenter IPs but works residentially, so ingestion must run from the Mac. `scripts/SCHEDULING.md` documents the reasoning + cron alternative.
-- [x] `scripts/run_phase.sh` (env-robust wrapper + dated logs) + launchd templates + `scripts/schedule.sh {install|uninstall|status}` (renders plists with the repo path — nothing machine-specific committed). Defaults: pregame 17:00, postgame 03:00 local (target ~5pm/3am ET); `pmset` note for waking the Mac.
+- [x] `scripts/run_phase.sh` (env-robust wrapper + dated logs) + launchd templates + `scripts/schedule.sh {install|uninstall|status}` (renders plists with the repo path — nothing machine-specific committed). Pacific defaults: postgame 09:00, pregame 10:00, props-early 10:45, props 14:30, close 15:30 + 18:30.
 - [x] Persistent run summary: every run appends `{ts, phase, ok, steps}` to `logs/pipeline-runs.jsonl`.
 - [ ] *Season activation:* `scripts/schedule.sh install`, adjust hours for your timezone, and after ~1 week of games `calibrate --model-version claude-sonnet-5 --save`.
 - [ ] *Optional:* a second morning "preview" pregame run (needs multiple-predictions-per-game `as_of` timing + odds-budget care).

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nba-bot.props</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/run_phase.sh</string>
+        <string>props</string>
+    </array>
+    <!-- Mid-afternoon: ~90 min before the first evening tips (~4pm PT). Later than
+         the game bets on purpose: props are won on knowing who plays, and the injury
+         report firms up through the day. Sends the best-bets text.
+         Hour is LOCAL machine time (defaults assume PT). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>14</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/launchd.props.out</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/launchd.props.err</string>
+</dict>
+</plist>

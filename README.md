@@ -1,8 +1,8 @@
 # NBA Trading Bot for 2026-27 Season
 
-An agent pipeline that ingests live NBA data and news, produces an **independent pre-game win probability**
-for each matchup, compares that to the betting market to find mispricings, and
-rigorously backtests itself against closing lines.
+An agent pipeline that ingests live NBA data and news, prices **game lines and player props**
+independently of the betting market, bets (on paper) where it disagrees, texts you the day's
+best bets, and scores itself against closing lines.
 
 ## What it does
 
@@ -22,8 +22,21 @@ rigorously backtests itself against closing lines.
 - **Backtests** — replays a completed season point-in-time through the identical
   Analysis → Evaluation path, with a cost estimate before spending and a calibration
   report after.
-- **Runs live** — a daily pipeline (`pregame` / `postgame` phases) orchestrates the
-  whole loop for the season, with per-step error isolation for unattended operation.
+- **Prices player props** — a statistical projection for every player stat (points,
+  rebounds, assists, threes, steals, blocks, turnovers and the combos) as a full
+  distribution: minutes × per-minute rate × opponent × a team **minutes budget** that
+  redistributes playing time when rotation players are out. Backtestable on a whole
+  season for free (`nba-bot props-backtest`).
+- **Reads the news for it** — eight feeds, full article text. Claude turns each new
+  article into structured player signals (out, minutes limit, role change, returning)
+  that adjust the projections. The injury report only says who is out; the news says
+  who is limited, starting, or resting.
+- **Sizes bets and tracks them** — fractional Kelly on a probability blended toward the
+  market, capped per player, per game and per day; settled against the box score with CLV.
+- **Texts you** — the best bets before tip and the results the next morning, by iMessage
+  or push notification.
+- **Runs live** — a scheduled daily pipeline (`pregame` / `props` / `close` / `postgame`)
+  runs the whole loop for the season, with per-step error isolation.
 
 ---
 
@@ -36,7 +49,7 @@ rigorously backtests itself against closing lines.
    │ nba_api      │─────▶│  injuries · odds · news_articles/news_chunks ·│
    │ ESPN (inj.)  │      │  predictions · prediction_evaluations         │
    │ The Odds API │      └───────────────────────────────────────────────┘
-   │ ESPN RSS     │                 ▲                    │
+   │ 8 news feeds │                 ▲                    │
    └──────────────┘                 │                    │
           │                         │ point-in-time      │
           ▼                         │ (as_of cutoff)     ▼
@@ -81,8 +94,22 @@ All commands run via `uv run nba-bot <command>`.
 
 ### Daily operation (in season)
 ```bash
-nba-bot daily-pregame    # ingest data/injuries/results → capture odds → predict today's games
-nba-bot daily-postgame   # ingest final results/box scores → mark closing lines → evaluate
+nba-bot daily-pregame    # ingest data/injuries/results/news → game odds → predict → bet games
+nba-bot daily-props      # injuries + news → player signals → prop odds → bet props → text best bets
+nba-bot daily-close      # near-tip snapshot: the closing prices CLV is measured against
+nba-bot daily-postgame   # final results/box scores → mark closing → evaluate → settle → text results
+```
+`scripts/schedule.sh install` runs these on a timer — see [scripts/SCHEDULING.md](scripts/SCHEDULING.md),
+which also covers setting up the texts.
+
+### Player props
+```bash
+nba-bot props-backtest   # score the projection model on a full season (free, no API calls)
+nba-bot props            # preview today's best prop bets (add --refresh-odds, --record)
+nba-bot props-record     # paper record: CLV, ROI, and the model vs. the market on every line
+nba-bot extract-signals  # read new articles into player signals
+nba-bot digest           # print the best-bets text (--results, --send)
+nba-bot notify-test      # check the text / push channel
 ```
 
 ### Individual steps

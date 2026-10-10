@@ -46,7 +46,14 @@ class Game(Base):
     away_rest_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_back_to_back_home: Mapped[bool] = mapped_column(Boolean, default=False)
     is_back_to_back_away: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Real tip-off instant (migration 006); NULL for games loaded before it.
+    tipoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# Preseason games (nba.com id prefix 001) are exhibition minutes. Every query that
+# reads games as evidence of team/player level filters on this.
+REAL_GAMES = Game.game_id.not_like("001%")
 
 
 class TeamGameStats(Base):
@@ -138,6 +145,8 @@ class NewsArticle(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     team_ids: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set once the news agent has mined this article for player signals (migration 006).
+    signals_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
@@ -220,3 +229,100 @@ class CalibrationParams(Base):
     b: Mapped[float] = mapped_column(Numeric, nullable=False)
     n: Mapped[int] = mapped_column(Integer, nullable=False)
     fitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PropOdds(Base):
+    __tablename__ = "prop_odds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), nullable=False)
+    sportsbook: Mapped[str] = mapped_column(String, nullable=False)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    player_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line: Mapped[float] = mapped_column(Numeric, nullable=False)
+    over_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    under_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PropBet(Base):
+    __tablename__ = "prop_bets"
+    __table_args__ = (
+        UniqueConstraint("game_id", "player_id", "model_version",
+                         name="prop_bets_game_player_model_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.team_id"), nullable=True)
+    model_version: Mapped[str] = mapped_column(String, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String, nullable=False)  # 'over' | 'under'
+    line: Mapped[float] = mapped_column(Numeric, nullable=False)
+    sportsbook: Mapped[str] = mapped_column(String, nullable=False)
+    n_books: Mapped[int] = mapped_column(Integer, nullable=False)
+    decimal_odds: Mapped[float] = mapped_column(Numeric, nullable=False)
+    model_prob: Mapped[float] = mapped_column(Numeric, nullable=False)
+    market_prob: Mapped[float] = mapped_column(Numeric, nullable=False)
+    edge: Mapped[float] = mapped_column(Numeric, nullable=False)
+    ev: Mapped[float] = mapped_column(Numeric, nullable=False)
+    stake_fraction: Mapped[float] = mapped_column(Numeric, nullable=False)
+    proj_mean: Mapped[float] = mapped_column(Numeric, nullable=False)
+    proj_phi: Mapped[float] = mapped_column(Numeric, nullable=False)
+    proj_minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Settlement (after the game resolves):
+    closing_prob: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    clv: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    actual_value: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    result: Mapped[str | None] = mapped_column(String, nullable=True)  # won|lost|push|void
+    pnl: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NewsSignal(Base):
+    __tablename__ = "news_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("news_articles.id", ondelete="CASCADE"), nullable=True
+    )
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.team_id"), nullable=True)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    player_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    minutes_mult: Mapped[float] = mapped_column(Numeric, default=1)
+    usage_mult: Mapped[float] = mapped_column(Numeric, default=1)
+    confidence: Mapped[float] = mapped_column(Numeric, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PropProjection(Base):
+    __tablename__ = "prop_projections"
+    __table_args__ = (
+        UniqueConstraint("game_id", "player_id", "market", "model_version",
+                         name="prop_projections_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey("games.game_id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    model_version: Mapped[str] = mapped_column(String, nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    line: Mapped[float] = mapped_column(Numeric, nullable=False)
+    n_books: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_over: Mapped[float] = mapped_column(Numeric, nullable=False)
+    market_over: Mapped[float] = mapped_column(Numeric, nullable=False)
+    proj_mean: Mapped[float] = mapped_column(Numeric, nullable=False)
+    proj_minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    actual_value: Mapped[float | None] = mapped_column(Numeric, nullable=True)

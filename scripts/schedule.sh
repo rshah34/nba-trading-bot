@@ -4,14 +4,14 @@
 # Renders the plist templates with this repo's absolute path (so nothing
 # machine-specific is committed) into ~/Library/LaunchAgents and loads them.
 #
-#   scripts/schedule.sh install     # render + load both jobs
-#   scripts/schedule.sh uninstall   # unload + remove both jobs
+#   scripts/schedule.sh install     # render + load every job
+#   scripts/schedule.sh uninstall   # unload + remove every job
 #   scripts/schedule.sh status      # show whether they're loaded
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTS="$HOME/Library/LaunchAgents"
-JOBS=(com.nba-bot.pregame com.nba-bot.odds com.nba-bot.postgame)
+JOBS=(com.nba-bot.postgame com.nba-bot.pregame com.nba-bot.props-early com.nba-bot.props com.nba-bot.close)
 ACTION="${1:-status}"
 
 case "$ACTION" in

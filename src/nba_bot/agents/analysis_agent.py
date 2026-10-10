@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import anthropic
 from pydantic import BaseModel, Field
@@ -22,7 +22,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from nba_bot.config import settings
-from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Prediction, Team, TeamGameStats
+from nba_bot.db.models import (
+    REAL_GAMES,
+    Game,
+    Injury,
+    Odds,
+    PlayerGameStats,
+    Prediction,
+    Team,
+    TeamGameStats,
+)
 from nba_bot.features.four_factors import team_four_factors
 from nba_bot.features.on_off import oracle_absences, team_on_off
 from nba_bot.markets import MarketLine, market_line_from_odds
@@ -30,6 +39,9 @@ from nba_bot.rag import retrieval
 
 # Injury statuses worth surfacing to the model (skip healthy/available noise).
 _RELEVANT_INJURY_STATUSES = {"out", "doubtful", "questionable", "day-to-day", "gtd"}
+# One sync writes the whole league report within seconds; rows this close to the
+# newest one belong to the same report.
+_REPORT_BATCH_WINDOW = timedelta(minutes=10)
 
 
 # --------------------------------------------------------------------------- #
@@ -51,6 +63,7 @@ def recent_form(session: Session, team_id: int, as_of: date, n: int = 10) -> Tea
         .where(
             TeamGameStats.team_id == team_id,
             Game.status == "final",
+            REAL_GAMES,
             Game.game_date < as_of,
             TeamGameStats.plus_minus.is_not(None),
         )
@@ -77,7 +90,7 @@ def player_form(session: Session, team_id: int, as_of: date, n_games: int = 10,
     recent_games = session.execute(
         select(Game.game_id)
         .join(PlayerGameStats, PlayerGameStats.game_id == Game.game_id)
-        .where(PlayerGameStats.team_id == team_id, Game.game_date < as_of)
+        .where(PlayerGameStats.team_id == team_id, REAL_GAMES, Game.game_date < as_of)
         .group_by(Game.game_id, Game.game_date)
         .order_by(Game.game_date.desc())
         .limit(n_games)
@@ -111,10 +124,24 @@ def player_form(session: Session, team_id: int, as_of: date, n_games: int = 10,
 
 
 def current_injuries(session: Session, team_id: int, as_of: datetime) -> list[dict]:
-    """Latest known injury status per player for a team, as of the cutoff."""
+    """A team's injuries on the most recent report at or before the cutoff.
+
+    Each sync appends the whole league report, and a player who recovers simply stops
+    being listed — so "latest row per player" would keep him injured forever. Only
+    rows from the newest sync count.
+    """
+    latest = session.execute(
+        select(func.max(Injury.reported_at)).where(Injury.reported_at <= as_of)
+    ).scalar_one_or_none()
+    if latest is None:
+        return []
     rows = session.execute(
         select(Injury)
-        .where(Injury.team_id == team_id, Injury.reported_at <= as_of)
+        .where(
+            Injury.team_id == team_id,
+            Injury.reported_at <= latest,
+            Injury.reported_at >= latest - _REPORT_BATCH_WINDOW,
+        )
         .order_by(Injury.reported_at.desc())
     ).scalars().all()
 
@@ -464,7 +491,10 @@ def run_predictions(
 ) -> list[Prediction]:
     """Predict every scheduled game on a date."""
     game_ids = session.execute(
-        select(Game.game_id).where(Game.game_date == game_date, Game.status == "scheduled")
+        # Preseason is exhibition — predicting it would pollute the track record.
+        select(Game.game_id).where(
+            Game.game_date == game_date, Game.status == "scheduled", REAL_GAMES
+        )
     ).scalars().all()
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
