@@ -193,7 +193,7 @@ class TeamView:
     blocked: dict[int, str]                 # player -> why we won't bet him
 
 
-def _team_view(
+def team_view(
     session: Session, data: PropsData, team_id: int, opp_factors: dict[str, float] | None,
     game_date: date, as_of: datetime, signals: dict[int, list],
 ) -> TeamView:
@@ -243,7 +243,7 @@ def _team_view(
     return TeamView(projections, alt, blocked)
 
 
-def _latest_quotes(session: Session, game_id: str) -> dict[tuple[int, str], list[betting.PropQuote]]:
+def latest_quotes(session: Session, game_id: str) -> dict[tuple[int, str], list[betting.PropQuote]]:
     """(player, market) -> two-way quotes from the newest snapshot of a game."""
     newest = session.execute(
         select(func.max(PropOdds.captured_at)).where(PropOdds.game_id == game_id)
@@ -269,7 +269,7 @@ def _latest_quotes(session: Session, game_id: str) -> dict[tuple[int, str], list
     return quotes
 
 
-def _consensus(quotes: list[betting.PropQuote]) -> tuple[float, int, float] | None:
+def consensus(quotes: list[betting.PropQuote]) -> tuple[float, int, float] | None:
     """(most-quoted line, books on it, de-vigged P(over)) for one player-market."""
     by_line: dict[float, list[betting.PropQuote]] = defaultdict(list)
     for q in quotes:
@@ -326,11 +326,11 @@ def price_props(
         if (window_hours is not None and game.tipoff_at is not None
                 and game.tipoff_at > as_of + timedelta(hours=window_hours)):
             continue
-        quotes = _latest_quotes(session, game.game_id)
+        quotes = latest_quotes(session, game.game_id)
         if not quotes:
             continue
         views = {
-            team: _team_view(session, data, team, factors.get(opp), game_date, as_of, signals)
+            team: team_view(session, data, team, factors.get(opp), game_date, as_of, signals)
             for team, opp in ((game.home_team_id, game.away_team_id),
                               (game.away_team_id, game.home_team_id))
         }
@@ -346,7 +346,7 @@ def price_props(
             if proj.minutes < _MIN_PROJECTED_MINUTES:
                 continue
 
-            cons = _consensus(qs)
+            cons = consensus(qs)
             if cons is not None and log_lines:
                 line, n_books, market_over = cons
                 over, under, push = proj.probs(market, line)

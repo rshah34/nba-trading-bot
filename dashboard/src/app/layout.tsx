@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import { Nav } from "@/components/Nav";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NBA Trading Bot — Model Dashboard",
+  title: "NBA Trading Bot",
   description:
-    "Pre-game win-probability model vs. the betting market: calibration, accuracy, and edge.",
+    "Tonight's slate, player and team stats, prop projections, injury news, and the bot's picks.",
 };
 
 export default function RootLayout({
@@ -23,7 +24,10 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        <Nav />
+        <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">{children}</main>
+      </body>
     </html>
   );
 }

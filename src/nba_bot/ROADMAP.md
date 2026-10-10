@@ -72,9 +72,15 @@ questionable rotation player is priced both ways and only bets that survive both
   moneyline-only game lines; closing prices are bought only with what is left over.
 - Claude: Haiku reads the news (~a cent a day), Sonnet predicts games (~$3 a month).
 
+## The dashboard (`dashboard/`, API in `api/`)
+
+A read-only site for exploring everything the bot knows: tonight's slate with projected
+box scores, every player's game log with a prop explorer (set any line, see hit rates
+and the model's probability), team matchup tables, the consolidated news, and the picks
+with their record. See [dashboard/README.md](../../dashboard/README.md).
+
 ## Not built
 
-- Props on the dashboard (it shows game predictions and game bets only).
 - A "returning player" adjustment beyond what the news signals carry.
 - Per-market calibration of prop probabilities — needs a few weeks of live lines first.
 

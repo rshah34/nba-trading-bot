@@ -14,9 +14,11 @@
   --gridline: #e1e0d9;
   --baseline: #c3c2b7;
   --border: rgba(11, 11, 11, 0.1);
-  --series-1: #2a78d6; /* model (blue) */
-  --good: #006300; /* positive edge */
-  --critical: #c4302f; /* negative edge */
+  --series-1: #2a78d6; /* the highlighted series (blue) */
+  --series-rest: #c3c2b7; /* de-emphasized marks beside it */
+  --good: #006300; /* positive delta */
+  --critical: #c4302f; /* negative delta */
+  --warning: #fab219; /* status: uncertain — always shown with a label */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,8 +32,10 @@
     --baseline: #383835;
     --border: rgba(255, 255, 255, 0.1);
     --series-1: #3987e5;
+    --series-rest: #4a4a46;
     --good: #0ca30c;
     --critical: #e05a59;
+    --warning: #fab219;
   }
 }
 
@@ -45,8 +49,10 @@
   --baseline: #383835;
   --border: rgba(255, 255, 255, 0.1);
   --series-1: #3987e5;
+  --series-rest: #4a4a46;
   --good: #0ca30c;
   --critical: #e05a59;
+  --warning: #fab219;
 }
 
 @theme inline {
@@ -60,6 +66,8 @@
   --color-series-1: var(--series-1);
   --color-good: var(--good);
   --color-critical: var(--critical);
+  --color-warning: var(--warning);
+  --color-series-rest: var(--series-rest);
   --color-border: var(--border);
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }

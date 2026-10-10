@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Dashboard
 
-## Getting Started
+A read-only web app over the bot's database: tonight's slate, player and team stats,
+prop projections, injury news, and the picks with their record.
 
-First, run the development server:
+## Run it
+
+Two processes, from the repo root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+uv run nba-bot serve          # the API, on http://127.0.0.1:8000
+cd dashboard && npm run dev   # the site, on http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Needs Node 20+ (`npm install` once). The site reads the API address from
+`NEXT_PUBLIC_API_BASE` in `dashboard/.env.local` (see `.env.example`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Pages
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Page | What it's for |
+|------|---------------|
+| **Tonight** (`/`) | Any day's games with the model's and the market's win probability, that day's picks, the strongest injury news, and who is heating up. Step through dates or jump to one. |
+| **Game** (`/games/[id]`) | Both teams' projected box scores before the game; after it, what each player did next to what the model projected. Injury report, news, and the model's reasoning. |
+| **Players** (`/players`) | Every player's averages — season, last 10 or last 5 — sortable and filterable, with minutes and points trends. |
+| **Player** (`/players/[id]`) | The prop explorer: pick any of 12 markets, set a line, and see how often he has cleared it (last 5/10/20/season, home/away) and what the model gives the over and under for his next game. Full game log and news. |
+| **Teams** (`/teams`) | What each team allows and produces per game, shaded to make soft matchups stand out. |
+| **Team** (`/teams/[id]`) | Roster with recent minutes and injury status, results, injury report, news. |
+| **News** (`/news`) | Player reports read out of the news feeds, merged across articles, firmest first. |
+| **Picks** (`/picks`) | Every recorded pick and how it finished, closing-line value, and the game model's backtest. |
 
-## Learn More
+Press `/` anywhere to search players and teams.
 
-To learn more about Next.js, take a look at the following resources:
+## Layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `src/app/` — one folder per page (Next.js app router, client-rendered).
+- `src/components/` — the sortable table, game-log chart, search, and shared pieces.
+- `src/lib/` — the API hook (`useApi`), wire types, formatters, and the prop-market list.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The API side is `src/nba_bot/api/` in the repo root: `views.py` assembles what each page
+needs, `app.py` exposes it. Nothing in the dashboard writes or triggers the pipeline.

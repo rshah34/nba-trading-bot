@@ -1,27 +1,211 @@
-// Wire types — mirror nba_bot.api.schemas on the Python side.
+// Wire types — mirror what nba_bot.api returns.
+
+export type StatKey = "pts" | "reb" | "ast" | "fg3m" | "stl" | "blk" | "tov";
+export type StatLine = Record<StatKey, number> & { min: number };
+export type Averages = StatLine & { gp: number };
 
 export interface TeamRef {
-  team_id: number;
-  abbreviation: string;
-  full_name: string;
+  id: number;
+  abbr: string;
+  name: string;
+  conference: string | null;
 }
 
-export interface PredictionSummary {
+export interface Report {
+  player: string;
+  player_id: number | null;
+  team: string | null;
+  kind: string;
+  sources: number;
+  confidence: number;
+  summary: string;
+  published_at: string | null;
+}
+
+export interface Pick {
+  kind: "game" | "prop";
   game_id: string;
-  game_date: string;
-  season: string;
-  status: string;
-  home: TeamRef;
-  away: TeamRef;
-  home_score: number | null;
-  away_score: number | null;
-  model_version: string;
-  as_of: string;
-  predicted_home_win_prob: number;
-  market_home_win_prob: number | null;
+  date: string;
+  decided_at: string | null;
+  matchup: string;
+  label: string;
+  player_id: number | null;
+  book: string | null;
+  odds: number | null;
+  model: number | null;
+  market: number | null;
   edge: number | null;
-  predicted_spread: number | null;
-  market_spread: number | null;
+  stake: number | null;
+  pnl: number | null;
+  clv: number | null;
+  result: "won" | "lost" | "push" | "void" | null;
+  actual: number | null;
+  notes: string | null;
+  guide: Record<string, { proj: number; over_at: number | null; under_at: number | null; actual?: number }> | null;
+}
+
+export interface GameCard {
+  game_id: string;
+  date: string;
+  status: string;
+  preseason: boolean;
+  tipoff_at: string | null;
+  home: TeamRef & { score: number | null; record: string | null };
+  away: TeamRef & { score: number | null; record: string | null };
+  model_home_prob: number | null;
+  market_home_prob: number | null;
+  reasoning: string | null;
+  key_factors: string[] | null;
+}
+
+export interface Slate {
+  date: string;
+  prev: string | null;
+  next: string | null;
+  games: GameCard[];
+  picks: Pick[];
+}
+
+export interface GamePlayer {
+  id: number;
+  name: string;
+  status: string | null;
+  proj: StatLine | null;
+  actual: StatLine | null;
+  notes: string[];
+}
+
+export interface Injury {
+  player: string;
+  status: string;
+  detail: string | null;
+}
+
+export interface GameSide {
+  team: TeamRef;
+  players: GamePlayer[];
+  injuries: Injury[];
+  reports: Report[];
+}
+
+export interface GameDetail extends GameCard {
+  away_side: GameSide;
+  home_side: GameSide;
+  picks: Pick[];
+}
+
+export interface PlayerRow {
+  id: number;
+  name: string;
+  team: string | null;
+  team_id: number | null;
+  season: Averages;
+  l10: Averages;
+  l5: Averages;
+}
+
+export interface PlayersIndex {
+  season: string;
+  seasons: string[];
+  players: PlayerRow[];
+}
+
+export interface PlayerGame extends StatLine {
+  game_id: string;
+  date: string;
+  season: string;
+  opp: string | null;
+  home?: boolean;
+  result?: string;
+}
+
+export interface MarketProjection {
+  label: string;
+  mean: number;
+  ladder: [number, number][]; // [line, P(over)]
+}
+
+export interface PlayerDetail {
+  id: number;
+  name: string;
+  team: TeamRef | null;
+  games: PlayerGame[];
+  next: {
+    game_id: string;
+    date: string;
+    tipoff_at: string | null;
+    opp: string | null;
+    home: boolean;
+    preseason: boolean;
+  } | null;
+  projection: {
+    minutes: number;
+    notes: string[];
+    markets: Record<string, MarketProjection>;
+    /** Per stat: the lines at which the model alone would take the over / the under. */
+    guide: Record<string, { proj: number; over_at: number | null; under_at: number | null }>;
+  } | null;
+  status: { label: string; detail: string | null } | null;
+  lines: Record<string, { line: number; books: number; over: number }>;
+  reports: Report[];
+}
+
+export interface TeamRow extends TeamRef {
+  gp: number;
+  w: number;
+  l: number;
+  pf: number;
+  pa: number;
+  margin: number;
+  for: Record<StatKey, number>;
+  allowed: Record<StatKey, number>;
+}
+
+export interface TeamsIndex {
+  season: string;
+  seasons: string[];
+  teams: TeamRow[];
+}
+
+export interface TeamDetail extends TeamRow {
+  season: string;
+  roster: {
+    id: number;
+    name: string;
+    stats_season: string;
+    season: Averages | null;
+    l5: Averages | null;
+    status: string | null;
+  }[];
+  results: { game_id: string; date: string; home: boolean; opp: string; result: string; preseason: boolean }[];
+  next: { game_id: string; date: string; home: boolean; opp: string } | null;
+  injuries: Injury[];
+  reports: Report[];
+}
+
+export interface PicksPayload {
+  picks: Pick[];
+  props: {
+    n_bets: number;
+    wins: number;
+    losses: number;
+    pushes: number;
+    win_rate: number | null;
+    roi: number | null;
+    units: number;
+    avg_clv: number | null;
+    clv_positive_rate: number | null;
+    guide?: { calls: number; hits: number; target: number };
+    lines?: { n: number; brier_model: number; brier_market: number; brier_blend: number };
+  };
+  games: {
+    n_bets: number;
+    win_rate: number | null;
+    roi: number | null;
+    final_bankroll: number;
+    avg_clv: number | null;
+    clv_positive_rate: number | null;
+  };
 }
 
 export interface ModelInfo {
@@ -52,36 +236,4 @@ export interface BacktestReport {
   accuracy_confident_picks: SplitAccuracy | null;
   accuracy_home_back_to_back: SplitAccuracy | null;
   calibration: CalibrationBin[];
-}
-
-export interface BetRow {
-  game_id: string;
-  game_date: string;
-  status: string;
-  home: TeamRef;
-  away: TeamRef;
-  home_score: number | null;
-  away_score: number | null;
-  model_version: string;
-  side: string; // 'home' | 'away'
-  edge: number;
-  model_prob: number;
-  market_prob: number;
-  decimal_odds: number;
-  stake_fraction: number;
-  settled: boolean;
-  won: boolean | null;
-  pnl: number | null;
-  clv: number | null;
-  closing_decimal_odds: number | null;
-}
-
-export interface BetsSummary {
-  n_bets: number;
-  n_pending: number;
-  win_rate: number | null;
-  roi: number | null;
-  final_bankroll: number;
-  avg_clv: number | null;
-  clv_positive_rate: number | null;
 }

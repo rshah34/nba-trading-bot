@@ -123,6 +123,15 @@ nba-bot predict          # win prob + edge for today's scheduled games
 nba-bot evaluate         # score resolved predictions → Brier / log-loss / CLV track record
 ```
 
+### Dashboard
+```bash
+nba-bot serve                 # read-only API on http://127.0.0.1:8000
+cd dashboard && npm run dev   # the site on http://localhost:3000
+```
+Tonight's slate with projected box scores, a searchable player table, a prop explorer
+for testing any line against a player's game log and the model, team matchup tables,
+the news reports, and the picks with their record. See [dashboard/README.md](dashboard/README.md).
+
 ### Backtesting
 ```bash
 # First time on a past season: load it, then fetch its box scores (one call per game).

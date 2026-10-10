@@ -382,7 +382,10 @@ def budget_adjustment(projected_minutes: float, ratio: float) -> Adjustment:
     return Adjustment(
         minutes_mult=minutes_mult,
         stat_mults=dict.fromkeys(BASE_STATS, stat_mult),
-        notes=[f"rotation minutes {'short' if ratio > 1 else 'crowded'} (budget ×{ratio:.2f})"],
+        notes=[
+            f"teammates out: more minutes and shots to go around (×{ratio:.2f})" if ratio > 1
+            else f"crowded rotation: fewer minutes to go around (×{ratio:.2f})"
+        ],
     )
 
 

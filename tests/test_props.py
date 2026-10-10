@@ -105,7 +105,7 @@ def test_project_team_raises_the_survivors_when_a_starter_is_missing():
     healthy = project_team(roster)
     short = project_team({pid: log for pid, log in roster.items() if pid != 0})
     assert short[7].mean("player_points") > healthy[7].mean("player_points") * 1.05
-    assert any("budget" in n for n in short[7].notes)
+    assert any("teammates out" in n for n in short[7].notes)
     # Without the budget the absence is invisible to the projection.
     flat = project_team({pid: log for pid, log in roster.items() if pid != 0}, use_budget=False)
     assert flat[7].mean("player_points") == pytest.approx(healthy[7].mean("player_points"))
