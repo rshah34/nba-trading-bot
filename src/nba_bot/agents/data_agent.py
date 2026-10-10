@@ -85,7 +85,8 @@ def _last_game_date_before(session: Session, team_id: int, before: date) -> date
     stmt = (
         select(Game.game_date)
         .where(
-            Game.status == "final",
+            # Played or not: last night's game counts for a back-to-back even while
+            # it is still waiting on its final score.
             Game.game_date < before,
             (Game.home_team_id == team_id) | (Game.away_team_id == team_id),
         )
@@ -128,6 +129,10 @@ def sync_games_for_date(session: Session, game_date: date) -> int:
                     "away_score": _to_int(g["away_score"]),
                     "status": g["status"],
                     "tipoff_at": _to_datetime(g["tipoff_at"]),
+                    "home_rest_days": home_rest,
+                    "away_rest_days": away_rest,
+                    "is_back_to_back_home": home_rest == 0,
+                    "is_back_to_back_away": away_rest == 0,
                 },
             )
         )
@@ -135,6 +140,49 @@ def sync_games_for_date(session: Session, game_date: date) -> int:
         count += 1
     session.commit()
     return count
+
+
+def sync_schedule(session: Session) -> int:
+    """Store the rest of the season's schedule, so any date can be looked up ahead of
+    time and rest days are known before the day itself.
+
+    Only games still to be played are written. Results come from the daily
+    scoreboard sync, so a game that is already final is never touched here. Re-run
+    daily: the league adds games (NBA Cup rounds, playoffs) and moves postponed ones.
+    """
+    schedule = nba_stats.get_schedule(_season_for_date(date.today()))
+    known = set(session.execute(select(Team.team_id)).scalars())
+
+    last_played: dict[int, date] = {}
+    rows = []
+    for g in schedule.sort_values(["game_date", "game_id"]).itertuples():
+        if g.home_team_id not in known or g.away_team_id not in known:
+            continue  # a playoff slot whose teams aren't decided, or an exhibition opponent
+        rest = {t: (g.game_date - last_played[t]).days - 1 if t in last_played else None
+                for t in (g.home_team_id, g.away_team_id)}
+        last_played[g.home_team_id] = last_played[g.away_team_id] = g.game_date
+        if g.final:
+            continue
+        rows.append({
+            "game_id": g.game_id, "season": _season_for_date(g.game_date),
+            "game_date": g.game_date, "home_team_id": g.home_team_id,
+            "away_team_id": g.away_team_id, "status": "scheduled",
+            "tipoff_at": _to_datetime(g.tipoff_at),
+            "home_rest_days": rest[g.home_team_id], "away_rest_days": rest[g.away_team_id],
+            "is_back_to_back_home": rest[g.home_team_id] == 0,
+            "is_back_to_back_away": rest[g.away_team_id] == 0,
+        })
+    if not rows:
+        return 0
+    stmt = pg_insert(Game).values(rows)
+    moved = ("game_date", "tipoff_at", "home_rest_days", "away_rest_days",
+             "is_back_to_back_home", "is_back_to_back_away")
+    session.execute(stmt.on_conflict_do_update(
+        index_elements=[Game.game_id], set_={c: stmt.excluded[c] for c in moved},
+        where=Game.status != "final",
+    ))
+    session.commit()
+    return len(rows)
 
 
 def _season_for_date(d: date) -> str:

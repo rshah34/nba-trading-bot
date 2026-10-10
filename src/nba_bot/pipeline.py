@@ -90,6 +90,8 @@ def run_daily(session: Session, on: date | None = None) -> dict:
         # Finals and box scores for the games since the last run, tonight's schedule,
         # and the current injury report.
         "ingest": _step("ingest", lambda: data_agent.run_nightly(session)),
+        # The rest of the season's fixtures: the league adds and moves games as it goes.
+        "schedule": _step("schedule", lambda: data_agent.sync_schedule(session)),
         "mark_closing": _step("mark-closing", lambda: data_agent.mark_closing_lines(session)),
         "evaluate": _step("evaluate", lambda: evaluation_agent.run_evaluation(session)),
         # Settle paper bets: CLV vs. the closing line + P&L on the outcome.

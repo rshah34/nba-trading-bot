@@ -13,6 +13,7 @@ import pandas as pd
 from nba_api.stats.endpoints import (
     boxscoretraditionalv3,
     leaguegamefinder,
+    scheduleleaguev2,
     scoreboardv3,
 )
 from nba_api.stats.static import teams as static_teams
@@ -86,6 +87,22 @@ def get_scoreboard(game_date: date) -> pd.DataFrame:
 
 
 @_retry
+def get_schedule(season: str) -> pd.DataFrame:
+    """Every game on the league's schedule for a season (e.g. '2026-27'), played or
+    not: one row per game with the date (US Eastern, as the league dates games),
+    the teams, the tip-off instant, and whether it is final."""
+    df = scheduleleaguev2.ScheduleLeagueV2(season=season, league_id="00").get_data_frames()[0]
+    return pd.DataFrame({
+        "game_id": df["gameId"],
+        "game_date": df["gameDateEst"].map(lambda v: _parse_utc(v).date()),
+        "home_team_id": df["homeTeam_teamId"].astype(int),
+        "away_team_id": df["awayTeam_teamId"].astype(int),
+        "tipoff_at": df["gameDateTimeUTC"].map(_parse_utc),
+        "final": df["gameStatus"].astype(int) == 3,
+    })
+
+
+@_retry
 def get_season_games(season: str, season_type: str = "Regular Season") -> pd.DataFrame:
     """Historical games for a season (e.g. '2023-24'), one row per team-game.
 
@@ -101,17 +118,22 @@ def get_season_games(season: str, season_type: str = "Regular Season") -> pd.Dat
 
 def pair_games(season_games: pd.DataFrame) -> pd.DataFrame:
     """Collapse the team-game rows from get_season_games into one row per game
-    with home/away team ids and scores, using MATCHUP ('vs.' = home, '@' = away).
+    with home/away team ids and scores.
+
+    The home team is read from MATCHUP: "BOS vs. NYK" names it first, "NYK @ BOS"
+    names it last. A neutral-site game (overseas, NBA Cup semifinal) gives both teams
+    the same "A @ B" string, so the row's own side can't be told from "vs."/"@" alone.
     """
     rows = []
     for game_id, group in season_games.groupby("GAME_ID"):
         if len(group) != 2:
             continue
-        home = group[group["MATCHUP"].str.contains("vs.")]
-        away = group[group["MATCHUP"].str.contains("@")]
-        if home.empty or away.empty:
+        matchup = group.iloc[0]["MATCHUP"]
+        home_abbr = matchup.split(" vs. ")[0] if " vs. " in matchup else matchup.split(" @ ")[-1]
+        is_home = group["TEAM_ABBREVIATION"] == home_abbr
+        if is_home.sum() != 1:
             continue
-        home, away = home.iloc[0], away.iloc[0]
+        home, away = group[is_home].iloc[0], group[~is_home].iloc[0]
         rows.append(
             {
                 "game_id": game_id,

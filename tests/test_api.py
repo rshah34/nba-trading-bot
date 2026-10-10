@@ -1,6 +1,8 @@
 """API tests: route wiring and the pure helpers behind the dashboard. DB/network-free."""
 
+from dataclasses import replace
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -23,7 +25,7 @@ def test_health_needs_no_database():
 
 def test_routes_are_registered():
     paths = {r.path for r in api.app.routes}
-    assert {"/health", "/slate", "/games/{game_id}", "/players", "/players/{player_id}", "/teams",
+    assert {"/health", "/slate", "/games/{game_id}", "/directory", "/players", "/players/{player_id}", "/teams",
             "/teams/{team_id}", "/news", "/picks", "/models", "/backtest"} <= paths
 
 
@@ -34,6 +36,41 @@ def test_averages_over_a_season_and_a_recent_window():
     assert views.averages(log, 5) == {"gp": 5, "min": 30.0, "pts": 22.0, "reb": 5.0, "ast": 4.0,
                                       "fg3m": 0.0, "stl": 0.0, "blk": 0.0, "tov": 0.0}
     assert views.averages([]) is None
+
+
+def test_directory_lists_a_player_who_missed_the_newest_season(monkeypatch):
+    current = _log(3, pts=10)
+    older = [replace(g, season="2024-25", pts=25) for g in _log(4)]
+    data = SimpleNamespace(
+        names={7: "Played Lately", 8: "Out All Year", 9: "Preseason Rookie"},
+        logs={7: current, 8: older},
+        current_team={7: 1, 8: 1},
+        team_games={1: current + older},
+    )
+    monkeypatch.setattr(views, "props_data", lambda session: data)
+    monkeypatch.setattr(views, "team_map", lambda session: {1: {"id": 1, "abbr": "DAL", "name": "Dallas"}})
+
+    out = views.directory(None)
+
+    assert out["season"] == "2025-26"
+    assert [(p["name"], p["team"], p["last_season"], p["pts"]) for p in out["players"]] == [
+        ("Played Lately", "DAL", "2025-26", 10.0),
+        ("Out All Year", "DAL", "2024-25", 25.0),
+        ("Preseason Rookie", None, None, None),
+    ]
+
+
+def test_players_index_shows_the_team_he_played_for_that_season(monkeypatch):
+    # Traded since: last season's numbers belong under last season's team.
+    data = SimpleNamespace(names={7: "Moved On"}, logs={7: _log(3)}, current_team={7: 2},
+                           team_games={1: _log(3)})
+    monkeypatch.setattr(views, "props_data", lambda session: data)
+    monkeypatch.setattr(views, "team_map", lambda session: {
+        1: {"id": 1, "abbr": "TOR", "name": "Toronto"}, 2: {"id": 2, "abbr": "LAC", "name": "LA"}})
+
+    row = views.players_index(None, "2025-26")["players"][0]
+
+    assert (row["team"], row["team_id"]) == ("TOR", 1)
 
 
 def test_ladder_is_a_falling_probability_at_every_half_point():

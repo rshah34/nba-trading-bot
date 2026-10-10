@@ -66,8 +66,13 @@ def load_season(session: Session, season: str) -> dict:
             )
             .on_conflict_do_update(
                 index_elements=[Game.game_id],
+                # Rest days too: they depend on the whole schedule, so a reload that
+                # adds a game must correct the games after it.
                 set_={"home_score": home_score, "away_score": away_score,
-                      "status": "final" if home_score is not None else "scheduled"},
+                      "status": "final" if home_score is not None else "scheduled",
+                      "home_rest_days": home_rest, "away_rest_days": away_rest,
+                      "is_back_to_back_home": home_rest == 0,
+                      "is_back_to_back_away": away_rest == 0},
             )
         )
         games += 1
@@ -88,6 +93,11 @@ def load_season(session: Session, season: str) -> dict:
 
     session.commit()
     return {"season": season, "games": games, "team_game_stat_rows": stats_rows}
+
+
+# After a failed fetch, wait this long before the next game; stop after this many in a row.
+_BACKOFF_SECONDS = 45
+_GIVE_UP_AFTER = 4
 
 
 def backfill_box_scores(session: Session, season: str, limit: int | None = None,
@@ -112,9 +122,16 @@ def backfill_box_scores(session: Session, season: str, limit: int | None = None,
         stmt = stmt.limit(limit)
     pending = session.execute(stmt).scalars().all()
 
-    fetched = 0
+    fetched = failed = streak = 0
     for gid in pending:
-        store_box_score(session, gid)
-        fetched += 1
+        try:
+            store_box_score(session, gid)
+            fetched, streak = fetched + 1, 0
+        except Exception:  # noqa: BLE001 — nba.com times out under load; the game stays pending
+            session.rollback()
+            failed, streak = failed + 1, streak + 1
+            if streak == _GIVE_UP_AFTER:
+                break  # it is refusing us; a later run picks up where this one stopped
+            time.sleep(_BACKOFF_SECONDS)
         time.sleep(sleep)
-    return {"games_fetched": fetched}
+    return {"games_fetched": fetched, "failed": failed, "pending": len(pending) - fetched}

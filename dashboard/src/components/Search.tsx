@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { get } from "@/lib/api";
-import type { PlayersIndex, TeamsIndex } from "@/lib/types";
+import type { Directory } from "@/lib/types";
 
 interface Hit {
   href: string;
@@ -15,16 +15,17 @@ interface Hit {
 let directory: Promise<Hit[]> | null = null;
 
 function loadDirectory(): Promise<Hit[]> {
-  directory ??= Promise.all([get<PlayersIndex>("/players"), get<TeamsIndex>("/teams")]).then(
-    ([players, teams]) => [
-      ...teams.teams.map((t) => ({ href: `/teams/${t.id}`, label: t.name, detail: "Team" })),
-      ...players.players.map((p) => ({
-        href: `/players/${p.id}`,
-        label: p.name,
-        detail: `${p.team ?? "—"} · ${p.season.pts.toFixed(1)} pts`,
-      })),
-    ],
-  );
+  directory ??= get<Directory>("/directory").then((d) => [
+    ...d.teams.map((t) => ({ href: `/teams/${t.id}`, label: t.name, detail: "Team" })),
+    ...d.players.map((p) => ({
+      href: `/players/${p.id}`,
+      label: p.name,
+      // A player who sat out the newest season is still findable; say which year the numbers are from.
+      detail: [p.team ?? "—", p.pts !== null && `${p.pts.toFixed(1)} pts`, p.last_season !== d.season && p.last_season]
+        .filter(Boolean)
+        .join(" · "),
+    })),
+  ]);
   directory.catch(() => (directory = null));
   return directory;
 }

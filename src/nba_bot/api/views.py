@@ -96,12 +96,30 @@ def players_index(session: Session, season: str | None) -> dict:
         games = [g for g in log if g.season == season]
         if not games:
             continue
-        team = teams.get(data.current_team.get(pid))
+        team = teams.get(games[-1].team_id)  # who he played for that season, not where he is now
         rows.append({"id": pid, "name": data.names[pid], "team": team["abbr"] if team else None,
                      "team_id": team["id"] if team else None, "season": averages(games),
                      "l10": averages(games, 10), "l5": averages(games, 5)})
     rows.sort(key=lambda r: r["season"]["pts"], reverse=True)
     return {"season": season, "seasons": seasons, "players": rows}
+
+
+def directory(session: Session) -> dict:
+    """Every team and every player with a box score on record, for search and
+    filters. Unlike the season table, a player who missed the newest season is here,
+    with the numbers from the last season he did play."""
+    data, teams = props_data(session), team_map(session)
+    players = []
+    for pid, name in data.names.items():
+        log = data.logs.get(pid, [])
+        last = log[-1].season if log else None
+        team = teams.get(data.current_team.get(pid))
+        players.append({"id": pid, "name": name, "team": team["abbr"] if team else None,
+                        "last_season": last,
+                        "pts": averages([g for g in log if g.season == last])["pts"] if log else None})
+    players.sort(key=lambda p: (p["last_season"] or "", p["pts"] or 0), reverse=True)
+    return {"season": next(iter(_seasons(data)), None),
+            "teams": sorted(teams.values(), key=lambda t: t["name"]), "players": players}
 
 
 def _ladder(proj: Projection, market: str) -> list[list[float]]:
@@ -150,6 +168,7 @@ def player_detail(session: Session, player_id: int) -> dict | None:
     games = []
     for g in reversed(log):
         row = {"game_id": g.game_id, "date": g.game_date.isoformat(), "season": g.season,
+               "team": teams.get(g.team_id, {}).get("abbr"),
                "opp": teams.get(g.opp_id, {}).get("abbr"), "min": round(g.minutes, 1)}
         row.update({s: getattr(g, s) for s in STATS})
         game = scores.get(g.game_id)
@@ -164,6 +183,9 @@ def player_detail(session: Session, player_id: int) -> dict | None:
 
     team_id = data.current_team.get(player_id)
     out = {"id": player_id, "name": data.names[player_id], "team": teams.get(team_id),
+           # Every season on record, whether or not he played in it: the page says so
+           # when he didn't, rather than hiding the season.
+           "seasons": _seasons(data),
            "games": games, "next": None, "projection": None, "status": None,
            "lines": {}, "reports": []}
     signals = news_agent.active_signals(session, now)

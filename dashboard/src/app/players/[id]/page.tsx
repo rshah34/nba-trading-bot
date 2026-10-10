@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { GameLogChart, type LogPoint } from "@/components/GameLogChart";
 import { ReportList } from "@/components/Reports";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, Tile } from "@/components/ui";
+import { Card, Empty, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, Tile } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { clock, fairOdds, num, pct, shortDate, signed, STAT_LABELS } from "@/lib/format";
 import { MARKETS, marketValue } from "@/lib/markets";
@@ -19,8 +19,7 @@ const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.le
 const halfPoint = (x: number) => Math.max(0.5, Math.floor(x) + 0.5);
 
 /** Test any line for any market against the player's games and the model's projection. */
-function PropExplorer({ player }: { player: PlayerDetail }) {
-  const season = player.games[0]?.season;
+function PropExplorer({ player, season }: { player: PlayerDetail; season: string }) {
   const seasonGames = useMemo(() => player.games.filter((g) => g.season === season), [player, season]);
 
   const [marketKey, setMarketKey] = useState(
@@ -86,7 +85,7 @@ function PropExplorer({ player }: { player: PlayerDetail }) {
           label="Games shown"
           value={String(span)}
           onChange={(v) => setSpan(v === "season" ? "season" : Number(v))}
-          options={[...WINDOWS.map((w) => ({ value: String(w), label: `Last ${w}` })), { value: "season", label: "Season" }]}
+          options={[...WINDOWS.map((w) => ({ value: String(w), label: `Last ${w}` })), { value: "season", label: `All of ${season}` }]}
         />
         <Segmented
           label="Venue"
@@ -133,7 +132,7 @@ function PropExplorer({ player }: { player: PlayerDetail }) {
           <div>
             <div className="text-xs font-medium text-muted">Went over {line} {market.label}</div>
             <dl className="tnum mt-1.5 space-y-1 text-sm">
-              {[...WINDOWS.map((w) => [`Last ${w}`, eligible.slice(0, w)] as const), ["Season", eligible] as const].map(
+              {[...WINDOWS.map((w) => [`Last ${w}`, eligible.slice(0, w)] as const), [season, eligible] as const].map(
                 ([label, games]) => {
                   const r = hitRate(games);
                   return (
@@ -198,11 +197,19 @@ function PropExplorer({ player }: { player: PlayerDetail }) {
 
 export default function PlayerPage() {
   const { id } = useParams<{ id: string }>();
+  const asked = useSearchParams().get("season");
   const { data: player, error, loading } = useApi<PlayerDetail>(`/players/${id}`);
+  const [picked, setPicked] = useState<string | null>(null);
   if (!player || String(player.id) !== id) return <PageState loading={loading} error={error} />;
 
-  const season = player.games[0]?.season;
-  const games = player.games.filter((g) => g.season === season);
+  // The newest season unless one was asked for, even when he has no games in it:
+  // an empty season is shown as empty, not skipped.
+  const wanted = picked ?? asked;
+  const season = wanted && player.seasons.includes(wanted) ? wanted : player.seasons[0];
+  const played = (s: string) => player.games.filter((g) => g.season === s);
+  const games = played(season);
+  const otherSeasons = player.seasons.filter((s) => s !== season && played(s).length > 0);
+  const teamsThatSeason = [...new Set(games.map((g) => g.team).filter(Boolean))].reverse();
   const mean = (list: PlayerGame[], k: StatKey | "min") => avg(list.map((g) => g[k]));
   const columns: Column<PlayerGame>[] = [
     { key: "date", header: "Date", sort: (g) => g.date, render: (g) => <Link href={`/games/${g.game_id}`} className="hover:underline">{shortDate(g.date)}</Link> },
@@ -239,10 +246,42 @@ export default function PlayerPage() {
           </p>
           {player.status?.detail && <p className="mt-1 max-w-2xl text-xs text-secondary">{player.status.detail}</p>}
         </div>
+        {player.seasons.length > 0 && (
+          <div className="text-right">
+            <Segmented
+              label="Season"
+              value={season}
+              onChange={setPicked}
+              options={player.seasons.map((s) => ({ value: s, label: s }))}
+            />
+            <p className="tnum mt-1.5 text-xs text-muted">
+              {games.length > 0
+                ? `${games.length} game${games.length === 1 ? "" : "s"} in ${season} · ${teamsThatSeason.join(", ")}`
+                : `No games in ${season}`}
+            </p>
+          </div>
+        )}
       </div>
 
       {games.length === 0 ? (
-        <PageState loading={false} error="No regular-season games on record for this player yet." />
+        <Empty title={season ? `${player.name} has no games in ${season}` : `No regular-season games on record for ${player.name} yet`}>
+          {otherSeasons.length > 0 ? (
+            <>
+              He didn&apos;t play a regular-season game that season. Games on record:{" "}
+              {otherSeasons.map((s, i) => (
+                <span key={s}>
+                  {i > 0 && ", "}
+                  <button type="button" className="font-medium text-primary underline" onClick={() => setPicked(s)}>
+                    {s} ({played(s).length})
+                  </button>
+                </span>
+              ))}
+              .
+            </>
+          ) : (
+            "Stats appear here after his first regular-season game."
+          )}
+        </Empty>
       ) : (
         <>
           <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -254,35 +293,37 @@ export default function PlayerPage() {
                   key={k}
                   label={`${STAT_LABELS[k]} · ${season}`}
                   value={num(s)}
-                  hint={<span className="tnum">Last 5: {num(recent)} ({signed(recent - s)})</span>}
+                  hint={<span className="tnum">Last 5 of {season}: {num(recent)} ({signed(recent - s)})</span>}
                 />
               );
             })}
           </div>
 
           <section className="mb-8">
-            <SectionTitle hint="Pick a market, set a line, and see how often he has cleared it and what the model gives it for his next game.">
+            <SectionTitle hint={`Pick a market, set a line, and see how often he cleared it in ${season} and what the model gives it for his next game.`}>
               Prop explorer
             </SectionTitle>
-            <PropExplorer key={player.id} player={player} />
-          </section>
-
-          {player.reports.length > 0 && (
-            <section className="mb-8">
-              <SectionTitle>News</SectionTitle>
-              <Card className="px-4 py-1">
-                <ReportList reports={player.reports} showPlayer={false} />
-              </Card>
-            </section>
-          )}
-
-          <section>
-            <SectionTitle>Game log · {season}</SectionTitle>
-            <Card className="p-2">
-              <SortableTable rows={games} columns={columns} rowKey={(g) => g.game_id} pageSize={15} />
-            </Card>
+            <PropExplorer key={`${player.id}-${season}`} player={player} season={season} />
           </section>
         </>
+      )}
+
+      {player.reports.length > 0 && (
+        <section className="my-8">
+          <SectionTitle>News</SectionTitle>
+          <Card className="px-4 py-1">
+            <ReportList reports={player.reports} showPlayer={false} />
+          </Card>
+        </section>
+      )}
+
+      {games.length > 0 && (
+        <section>
+          <SectionTitle>Game log · {season}</SectionTitle>
+          <Card className="p-2">
+            <SortableTable key={season} rows={games} columns={columns} rowKey={(g) => g.game_id} pageSize={15} />
+          </Card>
+        </section>
       )}
     </div>
   );

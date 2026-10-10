@@ -67,6 +67,12 @@ def game(game_id: str, session: Session = Depends(get_session)) -> dict:
     return _found(views.game_detail(session, game_id), "game")
 
 
+@app.get("/directory")
+def directory(session: Session = Depends(get_session)) -> dict:
+    """Every team and player on record, for the search box."""
+    return views.directory(session)
+
+
 @app.get("/players")
 def players(
     session: Session = Depends(get_session),

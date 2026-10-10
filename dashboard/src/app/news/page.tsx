@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ReportList } from "@/components/Reports";
 import { Card, Empty, PageState, Segmented, Select } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import type { Report } from "@/lib/types";
+import type { Directory, Report } from "@/lib/types";
 
 type Topic = "all" | "availability" | "role";
 const AVAILABILITY = new Set(["out", "doubtful", "questionable", "returning"]);
@@ -14,7 +14,7 @@ export default function NewsPage() {
   const [team, setTeam] = useState("");
   const [topic, setTopic] = useState<Topic>("all");
 
-  const teams = useMemo(() => [...new Set((data ?? []).map((r) => r.team).filter(Boolean) as string[])].sort(), [data]);
+  const { data: directory } = useApi<Directory>("/directory");
   const reports = (data ?? []).filter(
     (r) =>
       (!team || r.team === team) &&
@@ -40,7 +40,7 @@ export default function NewsPage() {
             { value: "role", label: "Minutes and role" },
           ]}
         />
-        <Select label="Team" value={team} onChange={setTeam} options={[{ value: "", label: "All teams" }, ...teams.map((t) => ({ value: t, label: t }))]} />
+        <Select label="Team" value={team} onChange={setTeam} options={[{ value: "", label: "All teams" }, ...(directory?.teams ?? []).map((t) => ({ value: t.abbr, label: t.name }))]} />
         <span className="tnum ml-auto text-xs text-muted">{reports.length} reports</span>
       </div>
       {reports.length > 0 ? (
@@ -48,7 +48,9 @@ export default function NewsPage() {
           <ReportList reports={reports} />
         </Card>
       ) : (
-        <Empty title="No reports match">News is read each afternoon, just before the picks are made.</Empty>
+        <Empty title={team ? "Nothing current on this team" : "No reports match"}>
+          News is read each afternoon for the teams playing that night, and a report drops off once it is out of date.
+        </Empty>
       )}
     </div>
   );

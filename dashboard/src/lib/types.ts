@@ -104,6 +104,12 @@ export interface PlayerRow {
   l5: Averages;
 }
 
+export interface Directory {
+  season: string | null;
+  teams: { id: number; abbr: string; name: string }[];
+  players: { id: number; name: string; team: string | null; last_season: string | null; pts: number | null }[];
+}
+
 export interface PlayersIndex {
   season: string;
   seasons: string[];
@@ -114,6 +120,7 @@ export interface PlayerGame extends StatLine {
   game_id: string;
   date: string;
   season: string;
+  team: string | null;
   opp: string | null;
   home?: boolean;
   result?: string;
@@ -129,6 +136,7 @@ export interface PlayerDetail {
   id: number;
   name: string;
   team: TeamRef | null;
+  seasons: string[];
   games: PlayerGame[];
   next: {
     game_id: string;

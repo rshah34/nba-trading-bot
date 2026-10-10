@@ -19,7 +19,6 @@ export default function PlayersPage() {
   const { data, error, loading } = useApi<PlayersIndex>(season ? `/players?season=${season}` : "/players");
   const [window, setWindow] = useState<Window>("season");
   const [team, setTeam] = useState("");
-  const [minMinutes, setMinMinutes] = useState("15");
   const [query, setQuery] = useState("");
 
   const teams = useMemo(
@@ -31,10 +30,9 @@ export default function PlayersPage() {
     return (data?.players ?? []).filter(
       (p) =>
         (!team || p.team === team) &&
-        p[window].min >= Number(minMinutes) &&
         (!q || p.name.toLowerCase().includes(q)),
     );
-  }, [data, team, minMinutes, query, window]);
+  }, [data, team, query]);
 
   if (!data) return <PageState loading={loading} error={error} />;
 
@@ -44,7 +42,7 @@ export default function PlayersPage() {
       header: "Player",
       sort: (r) => r.name,
       render: (r) => (
-        <Link href={`/players/${r.id}`} className="font-medium text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+        <Link href={`/players/${r.id}?season=${data.season}`} className="font-medium text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
           {r.name}
         </Link>
       ),
@@ -97,12 +95,6 @@ export default function PlayersPage() {
           ]}
         />
         <Select label="Team" value={team} onChange={setTeam} options={[{ value: "", label: "All teams" }, ...teams.map((t) => ({ value: t, label: t }))]} />
-        <Select
-          label="Minimum minutes"
-          value={minMinutes}
-          onChange={setMinMinutes}
-          options={["0", "10", "15", "20", "25", "30"].map((m) => ({ value: m, label: m === "0" ? "Any minutes" : `${m}+ min` }))}
-        />
         {data.seasons.length > 1 && (
           <Select label="Season" value={data.season} onChange={setSeason} options={data.seasons.map((s) => ({ value: s, label: s }))} />
         )}
@@ -119,7 +111,7 @@ export default function PlayersPage() {
           rowKey={(r) => r.id}
           initialSort={{ key: "pts", dir: "desc" }}
           pageSize={50}
-          onRowClick={(r) => router.push(`/players/${r.id}`)}
+          onRowClick={(r) => router.push(`/players/${r.id}?season=${data.season}`)}
         />
       </Card>
     </div>
