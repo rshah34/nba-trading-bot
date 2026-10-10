@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
 #
-# Run one daily pipeline phase under a scheduler (launchd/cron), logging to a
-# dated file. Usage: run_phase.sh pregame|props-early|props|close|postgame
+# Run one of the day's two jobs under a scheduler (launchd/cron), logging to a
+# dated file. Usage: run_phase.sh daily|close
 #
 # Built for a laptop that is often asleep at the scheduled time. launchd fires
 # every missed job at once on the next wake, so this wrapper:
-#   - queues phases and runs them one at a time, in pipeline order;
+#   - queues the jobs and runs them one at a time, the daily run first;
 #   - waits for the network, and starts Docker/Postgres if they aren't up;
 #   - keeps the Mac awake until the phase finishes.
 # launchd/cron also give a minimal environment, so it resolves the repo and PATH.
 set -euo pipefail
 
-PHASE="${1:?usage: run_phase.sh pregame|props-early|props|close|postgame}"
-# The number is the order phases run in when several are due at the same moment.
+PHASE="${1:?usage: run_phase.sh daily|close}"
+# The number is the order they run in when both are due at the same moment.
 case "$PHASE" in
-  postgame)    ORDER=1; CMD=(daily-postgame) ;;   # finals -> mark-closing -> evaluate -> settle -> text
-  pregame)     ORDER=2; CMD=(daily-pregame) ;;    # ingest + news -> predict each game
-  # Afternoon tips only: games starting before the main props run would see them.
-  props-early) ORDER=3; CMD=(daily-props --window-hours 4.25) ;;
-  props)       ORDER=4; CMD=(daily-props) ;;      # injuries + news -> odds -> the day's picks -> text
-  close)       ORDER=5; CMD=(daily-close) ;;      # near-tip snapshot -> the closing prices CLV uses
-  *) echo "unknown phase: $PHASE (expected pregame|props-early|props|close|postgame)" >&2; exit 2 ;;
+  daily) ORDER=1; CMD=(daily) ;;         # settle -> injuries + news -> predict -> odds -> picks -> text
+  close) ORDER=2; CMD=(daily-close) ;;   # near-tip snapshot -> the closing prices CLV uses
+  *) echo "unknown phase: $PHASE (expected daily|close)" >&2; exit 2 ;;
 esac
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,13 +67,13 @@ while :; do
     break
   fi
   if [ "$WAITED" -ge 5400 ]; then
-    say "gave up after 90 min waiting for another phase to finish"
+    say "gave up after 90 min waiting for the other job to finish"
     exit 1
   fi
   sleep 5
   WAITED=$((WAITED + 5))
 done
-[ "$WAITED" -gt 0 ] && say "waited ${WAITED}s for earlier phases"
+[ "$WAITED" -gt 0 ] && say "waited ${WAITED}s for the other job"
 
 # Wi-Fi takes a few seconds to come back after a wake.
 for _ in $(seq 1 24); do
@@ -109,7 +105,7 @@ fi
     echo "dry run: would run nba-bot ${CMD[*]}"
     sleep "${NBA_BOT_DRY_RUN}"
   else
-    # caffeinate holds off idle sleep until the phase is done.
+    # caffeinate holds off idle sleep until the run is done.
     caffeinate -i uv run nba-bot "${CMD[@]}"
   fi
   echo

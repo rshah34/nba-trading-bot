@@ -6,12 +6,10 @@ It never places a bet.
 
 ## What runs each game day
 
-| Phase | Command | Does |
-|-------|---------|------|
-| pregame | `daily-pregame` | results, injuries, news → Claude predicts each game |
-| props | `daily-props` | fresh injuries + news → player signals → current game + prop odds → **pick the day's 2–3 best bets and text them** |
-| close | `daily-close` | re-capture prices near tip — the closing lines the bets are graded against |
-| postgame | `daily-postgame` | final scores + box scores → settle bets (win/loss, CLV) |
+| Run | Command | Does |
+|-----|---------|------|
+| daily (14:30 PT) | `daily` | final scores + box scores → settle yesterday's bets (win/loss, CLV) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **pick the day's 2–3 best bets and text them** |
+| close (15:30, 18:30 PT) | `daily-close` | re-capture prices near tip — the closing lines the bets are graded against |
 
 Scheduling, texts and API budgets: [scripts/SCHEDULING.md](../../scripts/SCHEDULING.md).
 

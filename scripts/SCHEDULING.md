@@ -1,13 +1,11 @@
 # Scheduling the daily pipeline
 
-Four phases, each one CLI command. Every step inside a phase is fault-isolated (a flaky API call is logged and skipped, the run continues), and every run appends a one-line summary to `logs/pipeline-runs.jsonl`.
+Two commands. Every step inside a run is fault-isolated (a flaky API call is logged and skipped, the run continues), and every run appends a one-line summary to `logs/pipeline-runs.jsonl`.
 
-| Phase | Command | What it does |
-|-------|---------|--------------|
-| pregame | `nba-bot daily-pregame` | ingest games/results/injuries + news → player signals → Claude predicts each game |
-| props | `nba-bot daily-props` | re-read injuries + news → player signals → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
+| Run | Command | What it does |
+|-----|---------|--------------|
+| daily | `nba-bot daily` | final scores + box scores → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
 | close | `nba-bot daily-close` | re-capture game lines + the prop markets we hold → these become the **closing prices** |
-| postgame | `nba-bot daily-postgame` | final scores + box scores → mark closing → evaluate → **settle** (CLV + P&L) |
 
 ## Why local (not cloud)
 
@@ -21,17 +19,18 @@ scripts/schedule.sh status      # confirm they're loaded
 scripts/schedule.sh uninstall   # stop + remove them
 ```
 
-Five jobs, at **local machine time** (defaults assume a **Pacific** machine):
+Two jobs, at **local machine time** (defaults assume a **Pacific** machine):
 
 | Job | Default (PT) | Runs | Why then |
 |-----|--------------|------|----------|
-| postgame | 09:00 | `daily-postgame` | every game from last night is final; settles the bets |
-| pregame | 10:00 | `daily-pregame` | game predictions ready well before the picks are made |
-| props-early | 10:45 | `daily-props --window-hours 4.25` | only games tipping before ~3pm PT (weekend/holiday matinees); a no-op otherwise |
-| props | 14:30 | `daily-props` | ~90 min before the first evening tips; **the best-bets text** |
+| daily | 14:30 | `daily` | ~90 min before the first evening tips; **the best-bets text** |
 | close | 15:30 and 18:30 | `daily-close` | before the eastern and the western tips — the closing prices |
 
-**The picks.** Each day the bot records and texts at most `MAX_DAILY_BETS` bets (default 3), chosen across game winners and player props by edge — the probability it would size on, minus the market's. When both kinds qualify, the best of each is included. They are chosen in the afternoon run because props are won on knowing who plays, which firms up through the day (with *stale* availability the projections are worse than with none), and because the price recorded is then the one on offer when the text reaches you. The early run may use one of the day's picks on an afternoon game.
+**Why one run.** It is built for a laptop that is reliably awake in the afternoon and not much else. Everything the picks depend on — last night's results, the injury report, the news, the game predictions — is refreshed in the same run, minutes before the prices are taken, so nothing rests on an earlier job having happened.
+
+**The picks.** Each day the bot records and texts at most `MAX_DAILY_BETS` bets (default 3), chosen across game winners and player props by edge — the probability it would size on, minus the market's. When both kinds qualify, the best of each is included. They are chosen in the afternoon because props are won on knowing who plays, which firms up through the day (with *stale* availability the projections are worse than with none), and because the price recorded is then the one on offer when the text reaches you.
+
+**Afternoon games are not bet.** A game that tips before the run (weekend and holiday matinees) is skipped: no prediction, no pick. To cover them, move the daily job's `Hour` earlier on those days or run `nba-bot daily` by hand in the morning; the afternoon run then keeps to the same daily cap and doesn't pay again for games already predicted.
 
 **Why the close is its own run.** CLV — did you get a better number than the close — only exists if the bet and the close are different snapshots. Merge them and CLV is always ~0, which guts the metric the whole system is scored on.
 
@@ -39,15 +38,15 @@ Five jobs, at **local machine time** (defaults assume a **Pacific** machine):
 
 ### When the Mac is asleep at run time
 
-A sleeping Mac runs nothing. launchd fires every missed job once, all together, the next time it wakes, so `scripts/run_phase.sh` queues them and runs them one at a time in pipeline order (postgame → pregame → props-early → props → close). It also waits for Wi-Fi, starts Docker if the database isn't up, and holds the Mac awake until the phase finishes.
+A sleeping Mac runs nothing. launchd fires each missed job once, together, the next time it wakes, so `scripts/run_phase.sh` queues them and runs the daily run first, then the close. It also waits for Wi-Fi, starts Docker if the database isn't up, and holds the Mac awake until the run finishes.
 
 What a late run can and can't recover:
 
-- **Results and settlement** — always, just later.
+- **Results and settlement** — always, just later. The run reaches back to the oldest game still waiting on a result (up to two weeks), so a few days with the laptop shut are caught up on the next run.
 - **Bets** — only on games that haven't tipped yet. Wake up after tip and that game is skipped.
 - **Closing prices** — only if a `close` run lands between the bet and the tip; otherwise that bet has no CLV.
 
-To have the runs happen on time with nobody at the keyboard, the Mac has to stay awake through the afternoon: leave it **plugged in with the lid open** and turn on System Settings → Battery → Options → *Prevent automatic sleeping on power adapter when the display is off* (the display still sleeps). A closed lid sleeps the Mac regardless.
+To have the runs happen on time with nobody at the keyboard, the Mac has to stay awake from mid-afternoon to the last close run: leave it **plugged in with the lid open** and turn on System Settings → Battery → Options → *Prevent automatic sleeping on power adapter when the display is off* (the display still sleeps). A closed lid sleeps the Mac regardless.
 
 If the laptop is usually out of the house or shut in the afternoon, this needs an always-on machine on a home connection instead — any spare Mac running the same setup (the texts go through Messages, so it has to be a Mac). A cloud server is not a drop-in: NBA's data endpoints refuse datacenter addresses.
 
@@ -70,10 +69,10 @@ Two things call Claude, and both are logged per call to `logs/api-usage.jsonl` (
 
 | Call | When | Model | Measured cost |
 |------|------|-------|---------------|
-| Game prediction | once per game per day (`pregame`) | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.01 a game, so under $0.10 on a full night |
-| News reading | new articles about teams playing today (`pregame` and `props`; each article once) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
+| Game prediction | once per game per day | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.01 a game, so under $0.10 on a full night |
+| News reading | new articles about teams playing today (each article once) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
 
-Nothing is paid for twice: a game already predicted today is skipped on a re-run, each article is read once, and on a day with no games the props phase does nothing at all. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
+Nothing is paid for twice: a game already predicted today is skipped on a re-run, each article is read once, and on a day with no games the run only settles results — no model is called and no odds are bought. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
 
 ## Odds API budget
 
@@ -96,7 +95,7 @@ The bot paces itself so the month never runs dry: each game is bought once, no g
 ## Monitoring
 
 ```bash
-tail -f logs/props-$(date +%F).log           # live console output of today's run
+tail -f logs/daily-$(date +%F).log           # live console output of today's run
 tail -5 logs/pipeline-runs.jsonl             # one-line pass/fail summary per run
 nba-bot props-record                         # prop paper record: CLV, ROI, model vs. market
 nba-bot bets                                 # game-line paper record
@@ -105,10 +104,7 @@ nba-bot bets                                 # game-line paper record
 ## Alternative: cron
 
 ```cron
-0  9 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh postgame
-0 10 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh pregame
-45 10 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh props-early
-30 14 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh props
+30 14 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh daily
 30 15,18 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh close
 ```
 

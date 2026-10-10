@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -347,7 +347,12 @@ def sync_odds(session: Session, markets: tuple[str, ...] | None = None) -> dict:
             "skipped_live": live, "quota": quota}
 
 
-def mark_closing_lines(session: Session, lookback_days: int = 4) -> int:
+# How far back a run reaches for games it hasn't seen finish: long enough to catch
+# up after the machine has been off for a while.
+_CATCH_UP_DAYS = 14
+
+
+def mark_closing_lines(session: Session, lookback_days: int = _CATCH_UP_DAYS) -> int:
     """Flag the latest pre-tipoff snapshot per (game, sportsbook) as the closing line.
 
     Covers recently finished games only: older ones were marked on earlier runs and
@@ -374,15 +379,22 @@ def mark_closing_lines(session: Session, lookback_days: int = 4) -> int:
     return marked
 
 
-def run_nightly(session: Session, lookback_days: int = 2) -> dict:
+def run_nightly(session: Session) -> dict:
     """Full ingestion: teams, recent + today's + tomorrow's games, injuries, box scores.
 
-    The previous days are re-synced on purpose: the postgame run happens the morning
-    after, when "today" no longer covers last night's slate, so without the lookback
-    a finished game would stay `scheduled` forever and nothing would ever settle.
+    The previous days are re-synced on purpose: a game ends after the day's run, so
+    its final score only arrives on a later one. The re-sync reaches back to the
+    oldest game still waiting on a result, so days the machine was off are caught up
+    instead of staying `scheduled` forever and never settling.
     """
     teams = sync_teams(session)
     today = date.today()
+    oldest = session.execute(
+        select(func.min(Game.game_date)).where(
+            Game.status == "scheduled", Game.game_date < today,
+            Game.game_date >= today - timedelta(days=_CATCH_UP_DAYS))
+    ).scalar()
+    lookback_days = max(2, (today - oldest).days) if oldest else 2
     games_recent = sum(
         sync_games_for_date(session, today - timedelta(days=d))
         for d in range(lookback_days, 0, -1)

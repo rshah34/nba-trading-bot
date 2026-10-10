@@ -12,6 +12,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    or_,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -53,6 +55,9 @@ class Game(Base):
 # Preseason games (nba.com id prefix 001) are exhibition minutes. Every query that
 # reads games as evidence of team/player level filters on this.
 REAL_GAMES = Game.game_id.not_like("001%")
+# A game keeps status "scheduled" while it is being played, so "still to play"
+# needs the tip time as well.
+NOT_STARTED = or_(Game.tipoff_at.is_(None), Game.tipoff_at > func.now())
 
 
 class TeamGameStats(Base):

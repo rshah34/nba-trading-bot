@@ -154,7 +154,7 @@ def sync_prop_odds(
             out["skipped"] += 1
             continue
         if not only_open_bets and game_id in recent:
-            continue  # the early run already bought this game
+            continue  # an earlier run today already bought this game
         wanted = tuple(m for m in markets if m in open_markets[game_id]) if only_open_bets else markets
         if not wanted:
             continue
@@ -291,7 +291,6 @@ def price_props(
     data: PropsData | None = None,
     as_of: datetime | None = None,
     log_lines: bool = True,
-    window_hours: float | None = None,
     min_team_games: int = 5,
     **decide_kwargs,
 ) -> list[dict]:
@@ -304,7 +303,6 @@ def price_props(
     `min_team_games`: no bet on a player until he has that many games this season
     for his current team. Opening-week projections rest on last season's role, often
     on another team; the lines are still priced and logged, just not bet.
-    `window_hours`: only games tipping that soon (the early run for afternoon tips).
     """
     data = data or load_props_data(session)
     as_of = as_of or datetime.now(timezone.utc)
@@ -322,9 +320,6 @@ def price_props(
         if is_preseason(game.game_id):
             continue
         if game.tipoff_at is not None and game.tipoff_at <= as_of:
-            continue
-        if (window_hours is not None and game.tipoff_at is not None
-                and game.tipoff_at > as_of + timedelta(hours=window_hours)):
             continue
         quotes = latest_quotes(session, game.game_id)
         if not quotes:

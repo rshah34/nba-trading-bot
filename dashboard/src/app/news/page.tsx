@@ -48,7 +48,7 @@ export default function NewsPage() {
           <ReportList reports={reports} />
         </Card>
       ) : (
-        <Empty title="No reports match">News is read each morning and again before the picks are made.</Empty>
+        <Empty title="No reports match">News is read each afternoon, just before the picks are made.</Empty>
       )}
     </div>
   );

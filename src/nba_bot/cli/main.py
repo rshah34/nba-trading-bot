@@ -88,13 +88,7 @@ def predict(
         rprint(f"       [dim]{p.reasoning}[/dim]")
 
 
-@app.command()
-def daily_pregame():
-    """Pre-game phase: ingest data/injuries/results/news → capture odds → predict → record bets."""
-    _run_phase("pregame", pipeline.run_pregame)
-
-
-def _run_phase(name: str, fn) -> None:
+def _run_logged(name: str, fn) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with SessionLocal() as session:
         result = fn(session)
@@ -104,25 +98,16 @@ def _run_phase(name: str, fn) -> None:
 
 
 @app.command()
-def daily_props(
-    window_hours: float = typer.Option(
-        0, help="Only games tipping within this many hours (the early run). 0 = whole slate."),
-):
-    """Props phase: injuries + news → signals → prop odds → prop bets → text the best bets."""
-    window = window_hours or None
-    _run_phase("props", lambda session: pipeline.run_props(session, window_hours=window))
+def daily():
+    """The afternoon run: settle finished games → injuries + news → predict →
+    current odds → choose the day's picks → text them."""
+    _run_logged("daily", pipeline.run_daily)
 
 
 @app.command()
 def daily_close():
     """Closing snapshot: game lines + the prop markets we hold bets in (for CLV)."""
-    _run_phase("close", pipeline.run_close)
-
-
-@app.command()
-def daily_postgame():
-    """Post-game phase: final results/box scores → mark closing → evaluate → settle → text results."""
-    _run_phase("postgame", pipeline.run_postgame)
+    _run_logged("close", pipeline.run_close)
 
 
 @app.command()

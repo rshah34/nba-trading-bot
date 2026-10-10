@@ -35,8 +35,8 @@ best bets, and scores itself against closing lines.
   toward the market, and settled against the result with CLV. Prop picks come with
   single-stat guidance (the points / rebounds / assists lines the model would bet).
 - **Texts you** — the day's best bets before tip, as an iMessage sent from the Mac it runs on.
-- **Runs live** — a scheduled daily pipeline (`pregame` / `props` / `close` / `postgame`)
-  runs the whole loop for the season, with per-step error isolation.
+- **Runs live** — one scheduled afternoon run does the whole loop (settle, read, predict,
+  pick, text), plus a near-tip snapshot of closing prices, with per-step error isolation.
 
 ---
 
@@ -61,7 +61,7 @@ best bets, and scores itself against closing lines.
    └──────────────┘          └──────────────┘      └──────────────────┘
           │                         │                      │
           └──────────  BACKTEST (replay a season)  ────────┘
-         LIVE DAILY PIPELINE (pregame / props / close / postgame)
+         LIVE DAILY PIPELINE (one afternoon run + closing snapshot)
 ```
 
 ## Getting started
@@ -94,10 +94,8 @@ All commands run via `uv run nba-bot <command>`.
 
 ### Daily operation (in season)
 ```bash
-nba-bot daily-pregame    # ingest data/injuries/results/news → predict each game
-nba-bot daily-props      # injuries + news → current odds → choose the day's 2–3 picks → text them
+nba-bot daily            # settle finished games → injuries + news → predict → current odds → 2–3 picks → text them
 nba-bot daily-close      # near-tip snapshot: the closing prices CLV is measured against
-nba-bot daily-postgame   # final results/box scores → mark closing → evaluate → settle
 ```
 `scripts/schedule.sh install` runs these on a timer — see [scripts/SCHEDULING.md](scripts/SCHEDULING.md),
 which also covers setting up the texts.

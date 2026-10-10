@@ -22,9 +22,6 @@ from nba_bot.features.props import PropsData
 
 # No single game carries more than this share of bankroll across its picks.
 _MAX_GAME_STAKE = 0.05
-# The early run (afternoon tips only) may use this many of the day's picks, so the
-# evening slate — most of the games — isn't left with none.
-_EARLY_RUN_PICKS = 1
 
 
 def choose(games: list[dict], props: list[dict], slots: int) -> list[dict]:
@@ -77,7 +74,6 @@ def make_picks(
     *,
     data: PropsData | None = None,
     as_of: datetime | None = None,
-    window_hours: float | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Price everything bettable, choose the day's picks, and record them.
@@ -86,12 +82,10 @@ def make_picks(
     chooses but records nothing.
     """
     as_of = as_of or datetime.now(timezone.utc)
-    games = betting_agent.game_candidates(session, game_date, as_of=as_of, window_hours=window_hours)
+    games = betting_agent.game_candidates(session, game_date, as_of=as_of)
     props = props_agent.price_props(session, game_date, data=data, as_of=as_of,
-                                    window_hours=window_hours, log_lines=not dry_run)
+                                    log_lines=not dry_run)
     slots = settings.max_daily_bets - picks_made(session, game_date)
-    if window_hours is not None:
-        slots = min(slots, _EARLY_RUN_PICKS)
     chosen = choose(games, props, slots)
 
     placed = 0

@@ -9,7 +9,7 @@ applied to the raw probability first, so edge and sizing use honest numbers.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -69,7 +69,6 @@ def game_candidates(
     game_date: date,
     *,
     as_of: datetime,
-    window_hours: float | None = None,
     model_version: str | None = None,
     market_weight: float = 0.75,
     min_edge: float = 0.025,
@@ -107,11 +106,8 @@ def game_candidates(
         if game.game_id in seen or game.game_id in already:
             continue
         seen.add(game.game_id)  # newest prediction per game
-        if game.tipoff_at is not None:
-            if game.tipoff_at <= as_of:
-                continue
-            if window_hours is not None and game.tipoff_at > as_of + timedelta(hours=window_hours):
-                continue
+        if game.tipoff_at is not None and game.tipoff_at <= as_of:
+            continue
         cons = consensus_decimal_odds(
             session.execute(select(Odds).where(Odds.game_id == game.game_id)).scalars().all()
         )

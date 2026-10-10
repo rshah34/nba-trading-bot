@@ -26,6 +26,7 @@ from nba_bot import usage
 from nba_bot.agents import news_agent
 from nba_bot.config import settings
 from nba_bot.db.models import (
+    NOT_STARTED,
     REAL_GAMES,
     Game,
     Injury,
@@ -374,16 +375,17 @@ def run_predictions(
     model_version: str | None = None,
     force: bool = False,
 ) -> list[Prediction]:
-    """Predict every scheduled game on a date that doesn't have a prediction yet.
+    """Predict every game on a date that hasn't tipped and has no prediction yet.
 
-    A game already predicted by this model is skipped: the phase can run more than
-    once in a day (a manual run, a job catching up after sleep), and each repeat
+    A game already predicted by this model is skipped: the daily run can happen more
+    than once in a day (a manual run, a job catching up after sleep), and each repeat
     would otherwise pay for the whole slate again. `force=True` re-predicts.
     """
     game_ids = session.execute(
-        # Preseason is exhibition — predicting it would pollute the track record.
+        # Preseason is exhibition, and a call made after tip is not a prediction —
+        # either would pollute the track record.
         select(Game.game_id).where(
-            Game.game_date == game_date, Game.status == "scheduled", REAL_GAMES
+            Game.game_date == game_date, Game.status == "scheduled", REAL_GAMES, NOT_STARTED
         )
     ).scalars().all()
     if not force and game_ids:

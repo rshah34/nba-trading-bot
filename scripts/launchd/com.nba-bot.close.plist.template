@@ -11,7 +11,7 @@
     </array>
     <!-- Near tip, twice: before the ~4pm PT eastern tips and before the ~7pm PT
          western ones. The last pre-tip snapshot of each game becomes its CLOSING
-         price, which every bet's CLV is measured against. MUST run after the bets or
+         price, which every bet's CLV is measured against. MUST run after the daily run or
          CLV collapses to ~0. Cheap: one request for game lines, and props re-price
          only the markets we hold. Hour is LOCAL machine time (defaults assume PT). -->
     <key>StartCalendarInterval</key>
