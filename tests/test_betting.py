@@ -2,7 +2,6 @@
 
 from nba_bot.betting import (
     american_to_decimal,
-    clv,
     decide_bet_decimal,
     kelly_fraction,
     simulate_paper_trade,
@@ -51,10 +50,16 @@ def test_decide_bet_respects_the_vig_via_devig():
     assert d.side == "none"
 
 
-def test_clv_positive_when_price_beat_the_close():
-    # Took +2.10 decimal, closed at +1.90 => our side's implied prob rose => positive CLV.
-    assert clv(2.10, 1.90) > 0
-    assert clv(1.90, 2.10) < 0
+def test_game_bet_is_priced_at_your_own_books():
+    even = american_to_decimal(-110)
+    mine = {"home": ("kalshi", 1.95), "away": ("draftkings", 1.87)}
+    d = decide_bet_decimal(0.60, even, even, prices=mine)
+    assert (d.side, d.sportsbook, d.decimal_odds) == ("home", "kalshi", 1.95)
+    # Playable to the price that leaves half a point under the 60% we size on.
+    assert d.playable_odds == round(1 / 0.595, 3) < d.decimal_odds
+    # No bet when your books don't offer the side, or only at a price with no room.
+    assert decide_bet_decimal(0.60, even, even, prices={"away": ("draftkings", 1.87)}).side == "none"
+    assert decide_bet_decimal(0.60, even, even, prices={"home": ("draftkings", 1.6)}).side == "none"
 
 
 def test_simulate_paper_trade_tracks_bankroll_and_clv():
@@ -110,9 +115,43 @@ def test_decide_prop_guards():
     assert decide_prop(two, _flat(0.53)) is None              # edge too small after blending
     assert decide_prop(two, _flat(0.95)) is None              # too good to be true
     assert decide_prop(two[:1], _flat(0.62)) is None          # one book is not a market
-    # Books on different lines are separate markets: neither has two quotes here.
-    split = _quotes(("dk", 24.5, -110, -110), ("fd", 25.5, -110, -110))
-    assert decide_prop(split, _flat(0.62)) is None
+    # A book hanging a line far from ours isn't quoting the same bet.
+    apart = _quotes(("dk", 24.5, -110, -110), ("fd", 27.5, -110, -110))
+    assert decide_prop(apart, _flat(0.62)) is None
+
+
+def _sloped(line):
+    """A model where each point of line is worth four points of probability."""
+    over = 0.5 - 0.04 * (line - 25.5)
+    return over, 1 - over, 0.0
+
+
+def test_decide_prop_bets_only_at_your_books_but_hears_every_book():
+    quotes = _quotes(("dk", 24.5, -110, -110), ("fd", 24.5, 105, -125), ("mgm", 24.5, -110, -110))
+    d = decide_prop(quotes, _flat(0.62), books=frozenset({"dk"}))
+    assert d.sportsbook == "dk" and d.n_books == 3            # fd's better price isn't ours to take
+    assert decide_prop(quotes, _flat(0.62), books=frozenset({"caesars"})) is None
+
+
+def test_decide_prop_carries_a_nearby_line_to_ours():
+    # The market is 25.5 at even money; our book hangs 24.5 at the same price. The
+    # model agrees with the market exactly, so the only edge is the off-market line.
+    quotes = _quotes(("dk", 24.5, -110, -110), ("fd", 25.5, -110, -110), ("mgm", 25.5, -110, -110))
+    assert decide_prop(quotes, _sloped, books=frozenset({"dk"})) is None   # too small to bet alone
+    d = decide_prop(quotes, _sloped, books=frozenset({"dk"}), min_edge=0.005)
+    assert (d.side, d.line, d.n_books) == ("over", 24.5, 3)
+    assert d.model_prob == 0.54                               # the model at 24.5
+    assert d.market_prob == round((0.5 + 0.54 + 0.54) / 3, 4)  # the others, moved a point
+
+
+def test_decide_prop_says_how_far_the_bet_stays_playable():
+    quotes = _quotes(("dk", 24.5, 100, -120), ("fd", 24.5, -110, -110))
+    d = decide_prop(quotes, lambda line: (0.66 - 0.04 * (line - 24.5), 0.34 + 0.04 * (line - 24.5), 0.0))
+    assert d.side == "over" and d.decimal_odds == 2.0
+    assert d.playable_odds == round(1 / (d.bet_prob - 0.005), 3)
+    # Each half point costs two points of probability; even money stops paying
+    # once the blend falls under 50.5%.
+    assert d.playable_line == 24.5 + 0.5 * int((d.bet_prob - 0.505) / 0.02)
 
 
 def test_decide_prop_judges_each_line_on_its_own_probability():

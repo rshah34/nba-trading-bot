@@ -20,10 +20,13 @@ interface Props<T> {
   /** Rows shown before "Show all"; omit to show everything. */
   pageSize?: number;
   onRowClick?: (row: T) => void;
+  /** Tighter columns, for a wide table in a narrow card. */
+  dense?: boolean;
 }
 
 /** A dense table whose column headers sort it. Numbers sort high-to-low first. */
-export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize, onRowClick }: Props<T>) {
+export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize, onRowClick, dense }: Props<T>) {
+  const pad = dense ? "px-1.5" : "px-2.5";
   const [sort, setSort] = useState(initialSort ?? null);
   const [showAll, setShowAll] = useState(false);
 
@@ -56,7 +59,7 @@ export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize,
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="border-b border-[var(--border)] text-xs text-muted">
+            <tr className="border-b border-[var(--border)] bg-[var(--gridline)]/40 text-[11px] uppercase tracking-wide text-muted">
               {columns.map((c) => {
                 const active = sort?.key === c.key;
                 return (
@@ -65,13 +68,13 @@ export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize,
                     scope="col"
                     title={c.title}
                     aria-sort={active ? (sort!.dir === "asc" ? "ascending" : "descending") : undefined}
-                    className={`whitespace-nowrap px-2.5 py-2 font-medium ${c.align === "right" ? "text-right" : "text-left"}`}
+                    className={`whitespace-nowrap ${pad} py-2 font-medium ${c.align === "right" ? "text-right" : "text-left"}`}
                   >
                     {c.sort ? (
                       <button
                         type="button"
                         onClick={() => toggle(c)}
-                        className={`hover:text-primary ${active ? "text-primary" : ""}`}
+                        className={`uppercase tracking-wide hover:text-primary ${active ? "text-accent" : ""}`}
                       >
                         {c.header}
                         <span className="ml-0.5 inline-block w-2 text-[10px]" aria-hidden>
@@ -91,14 +94,14 @@ export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize,
               <tr
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={`border-b border-[var(--border)] last:border-0 ${
-                  onRowClick ? "cursor-pointer hover:bg-[var(--gridline)]/40" : ""
+                className={`border-b border-[var(--border)] last:border-0 even:bg-[var(--gridline)]/25 ${
+                  onRowClick ? "cursor-pointer hover:bg-accent/10" : ""
                 }`}
               >
                 {columns.map((c) => (
                   <td
                     key={c.key}
-                    className={`tnum whitespace-nowrap px-2.5 py-1.5 ${
+                    className={`tnum whitespace-nowrap ${pad} py-1.5 ${
                       c.align === "right" ? "text-right" : "text-left"
                     } ${sort?.key === c.key ? "font-medium text-primary" : "text-secondary"}`}
                   >

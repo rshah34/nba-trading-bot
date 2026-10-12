@@ -5,18 +5,18 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { PickCards } from "@/components/PickList";
 import { ReportList } from "@/components/Reports";
-import { Card, Empty, PageState, SectionTitle } from "@/components/ui";
+import { Card, Empty, PageState, SectionTitle, TeamMark } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { clock, longDate, num, pct, signed, todayIso } from "@/lib/format";
-import type { GameCard, PlayersIndex, Report, Slate } from "@/lib/types";
+import { clock, longDate, pct, seriesLine, todayIso } from "@/lib/format";
+import type { GameCard, Report, Slate } from "@/lib/types";
 
 /** A probability as a thin meter with its number beside it. */
-function ProbRow({ label, value }: { label: string; value: number | null }) {
+function ProbRow({ label, value, fill }: { label: string; value: number | null; fill: string }) {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="w-12 text-muted">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--gridline)]">
-        {value != null && <div className="h-full rounded-full bg-series-1" style={{ width: `${value * 100}%` }} />}
+        {value != null && <div className={`h-full rounded-full ${fill}`} style={{ width: `${value * 100}%` }} />}
       </div>
       <span className="tnum w-9 text-right font-medium text-primary">{pct(value)}</span>
     </div>
@@ -30,8 +30,16 @@ function GameTile({ game }: { game: GameCard }) {
     <Link href={`/games/${game.game_id}`} className="block">
       <Card className="h-full p-4 transition-colors hover:border-[var(--text-muted)]">
         <div className="flex items-center justify-between text-xs text-muted">
-          <span>{final ? "Final" : clock(game.tipoff_at) || "Scheduled"}</span>
-          {game.preseason && <span>Preseason</span>}
+          {final ? (
+            <span className="rounded-full bg-[var(--gridline)] px-2 py-0.5 font-medium text-secondary">Final</span>
+          ) : (
+            <span className="rounded-full bg-accent/15 px-2 py-0.5 font-medium text-accent">
+              {clock(game.tipoff_at) || "Scheduled"}
+            </span>
+          )}
+          <span>
+            {game.series ? seriesLine(game.home.abbr, game.away.abbr, game.series) : game.preseason ? "Preseason" : ""}
+          </span>
         </div>
         <div className="mt-2 space-y-1">
           {([
@@ -39,7 +47,8 @@ function GameTile({ game }: { game: GameCard }) {
             [game.home, homeWon],
           ] as const).map(([team, won]) => (
             <div key={team.id} className="flex items-baseline justify-between gap-2">
-              <span className={`text-sm ${!final || won ? "font-semibold text-primary" : "text-secondary"}`}>
+              <span className={`flex items-center gap-2 text-sm ${!final || won ? "font-semibold text-primary" : "text-secondary"}`}>
+                <TeamMark abbr={team.abbr} className="self-center" />
                 {team.name}
                 {team.record && <span className="tnum ml-1.5 text-xs font-normal text-muted">{team.record}</span>}
               </span>
@@ -52,8 +61,8 @@ function GameTile({ game }: { game: GameCard }) {
         {(game.model_home_prob != null || game.market_home_prob != null) && (
           <div className="mt-3 space-y-1 border-t border-[var(--border)] pt-3">
             <div className="text-[11px] text-muted">{game.home.abbr} win probability</div>
-            <ProbRow label="Model" value={game.model_home_prob} />
-            <ProbRow label="Market" value={game.market_home_prob} />
+            <ProbRow label="Model" value={game.model_home_prob} fill="bg-series-1" />
+            <ProbRow label="Market" value={game.market_home_prob} fill="bg-series-rest" />
           </div>
         )}
       </Card>
@@ -67,49 +76,13 @@ function LatestNews() {
   if (!data || data.length === 0) return null;
   return (
     <section>
-      <SectionTitle hint="Firmest and most widely reported first.">
+      <SectionTitle>
         <Link href="/news" className="hover:underline">
           Injury and role news →
         </Link>
       </SectionTitle>
       <Card className="px-4 py-1">
-        <ReportList reports={data.slice(0, 5)} />
-      </Card>
-    </section>
-  );
-}
-
-/** Whose scoring has moved most over his last five games. */
-function Trending() {
-  const { data } = useApi<PlayersIndex>("/players");
-  if (!data) return null;
-  const regulars = data.players
-    .filter((p) => p.l5.gp === 5 && p.l5.min >= 20)
-    .map((p) => ({ ...p, delta: p.l5.pts - p.season.pts }))
-    .sort((a, b) => b.delta - a.delta);
-  const rows = [...regulars.slice(0, 5), ...regulars.slice(-5).reverse()];
-  if (rows.length === 0) return null;
-  return (
-    <section>
-      <SectionTitle hint={`Points over the last five games against the ${data.season} average, players at 20+ minutes.`}>
-        <Link href="/players" className="hover:underline">
-          Heating up and cooling off →
-        </Link>
-      </SectionTitle>
-      <Card className="px-4 py-1">
-        <ul className="tnum divide-y divide-[var(--border)] text-sm">
-          {rows.map((p) => (
-            <li key={p.id} className="flex items-baseline justify-between gap-3 py-2">
-              <Link href={`/players/${p.id}`} className="truncate font-medium text-primary hover:underline">
-                {p.name} <span className="text-xs font-normal text-muted">{p.team}</span>
-              </Link>
-              <span className="shrink-0 text-secondary">
-                {num(p.l5.pts)} <span className="text-xs text-muted">vs {num(p.season.pts)}</span>
-                <span className="ml-2 inline-block w-11 text-right font-medium text-primary">{signed(p.delta)}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
+        <ReportList reports={data.slice(0, 6)} columns />
       </Card>
     </section>
   );
@@ -132,15 +105,15 @@ function Tonight() {
           <h1 className="text-2xl font-semibold tracking-tight text-primary">{longDate(data.date)}</h1>
           <p className="mt-1 text-sm text-secondary">
             {data.games.length} game{data.games.length === 1 ? "" : "s"}
-            {isToday ? " tonight" : ""}. Open one for both teams&apos; projected box scores, injuries and news.
+            {isToday ? " tonight" : ""}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
           <button type="button" className={navButton} disabled={!data.prev} onClick={() => go(data.prev)}>
             ← Previous
           </button>
-          <button type="button" className={navButton} onClick={() => go(null)}>
-            Next games
+          <button type="button" className={navButton} disabled={isToday} onClick={() => go(todayIso())}>
+            Today
           </button>
           <button type="button" className={navButton} disabled={!data.next} onClick={() => go(data.next)}>
             Next →
@@ -156,15 +129,14 @@ function Tonight() {
       </div>
 
       <section className="mb-8">
-        <SectionTitle hint="At most three a day across game winners and player props, chosen where the model disagrees most with current prices. Paper bets — the bot never places one.">
+        <SectionTitle hint="Up to three a day, where the model disagrees most with current prices. Paper bets.">
           Picks
         </SectionTitle>
         {data.picks.length > 0 ? (
           <PickCards picks={data.picks} />
         ) : (
           <Card className="border-dashed px-4 py-3 text-sm text-secondary">
-            No picks for this day. They are made about 90 minutes before the first evening tip, once injury news has
-            firmed up; preseason games are never bet.
+            No picks for this day.
           </Card>
         )}
       </section>
@@ -182,9 +154,8 @@ function Tonight() {
         )}
       </section>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-2">
+      <div className="mt-8">
         <LatestNews />
-        <Trending />
       </div>
     </div>
   );

@@ -56,7 +56,24 @@ export function ago(iso: string | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/** "BOS leads 2-1", "Series tied 1-1", "BOS wins 4-2". */
+export function seriesLine(home: string, away: string, s: { home: number; away: number }): string {
+  if (s.home === s.away) return `Series tied ${s.home}-${s.away}`;
+  const [leader, hi, lo] = s.home > s.away ? [home, s.home, s.away] : [away, s.away, s.home];
+  return `${leader} ${hi === 4 ? "wins" : "leads"} ${hi}-${lo}`;
+}
+
 export const todayIso = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+
+const BOOKS: Record<string, string> = {
+  draftkings: "DraftKings",
+  hardrockbet: "Hard Rock",
+  kalshi: "Kalshi",
+  fanduel: "FanDuel",
+  betmgm: "BetMGM",
+};
+
+export const bookName = (key: string) => BOOKS[key] ?? key;

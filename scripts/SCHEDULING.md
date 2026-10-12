@@ -5,7 +5,7 @@ Two commands. Every step inside a run is fault-isolated (a flaky API call is log
 | Run | Command | What it does |
 |-----|---------|--------------|
 | daily | `nba-bot daily` | final scores + box scores → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
-| close | `nba-bot daily-close` | re-capture game lines + the prop markets we hold → these become the **closing prices** |
+| close | `nba-bot daily-close` | re-read the injury report and text an update if it undercuts a pick; re-capture game lines + the prop markets we hold → these become the **closing prices** |
 
 ## Why local (not cloud)
 

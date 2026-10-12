@@ -22,9 +22,10 @@ best bets, and scores itself against closing lines.
   report after.
 - **Prices player props** — a statistical projection for every player stat (points,
   rebounds, assists, threes, steals, blocks, turnovers and the combos) as a full
-  distribution: minutes × per-minute rate × opponent × a team **minutes budget** that
-  redistributes playing time when rotation players are out. Backtestable on a whole
-  season for free (`nba-bot props-backtest`).
+  distribution: minutes × per-minute rate × opponent × a team **minutes budget** and
+  **stat budget** that hand playing time and production to whoever is left when
+  rotation players are out, plus the schedule (back-to-backs, layoffs, likely
+  blowouts). Backtestable on two full seasons for free (`nba-bot props-backtest`).
 - **Reads the news** — eight feeds, full article text. Claude turns each new article
   into structured player signals (out, minutes limit, role change, returning). Reports
   of the same thing are consolidated and ranked by how firmly and widely they are
@@ -32,11 +33,15 @@ best bets, and scores itself against closing lines.
   says who is limited, starting, or resting.
 - **Makes a few picks a day** — at most three bets across game winners and props,
   ranked by edge at current prices, sized by fractional Kelly on a probability blended
-  toward the market, and settled against the result with CLV. Prop picks come with
-  single-stat guidance (the points / rebounds / assists lines the model would bet).
-- **Texts you** — the day's best bets before tip, as an iMessage sent from the Mac it runs on.
+  toward the market, and settled against the result with CLV. Every book quoted sets
+  the market; the bet itself is only made at the books you use (`MY_BOOKS`). Prop picks
+  come with single-stat guidance (the points / rebounds / assists lines the model would bet).
+- **Texts you** — the day's best bets before tip, as an iMessage sent from the Mac it
+  runs on: each with a one-line reason and how far the price can move before it is a
+  pass. A second text follows only if a late injury change undercuts a pick.
 - **Runs live** — one scheduled afternoon run does the whole loop (settle, read, predict,
-  pick, text), plus a near-tip snapshot of closing prices, with per-step error isolation.
+  pick, text), plus a near-tip run that re-checks the injury report and snapshots
+  closing prices, with per-step error isolation.
 
 ---
 
@@ -95,7 +100,7 @@ All commands run via `uv run nba-bot <command>`.
 ### Daily operation (in season)
 ```bash
 nba-bot daily            # settle finished games → injuries + news → predict → current odds → 2–3 picks → text them
-nba-bot daily-close      # near-tip snapshot: the closing prices CLV is measured against
+nba-bot daily-close      # near tip: re-check injuries (text if a pick is undercut) + the closing prices CLV is measured against
 ```
 `scripts/schedule.sh install` runs these on a timer — see [scripts/SCHEDULING.md](scripts/SCHEDULING.md),
 which also covers setting up the texts.
@@ -126,9 +131,10 @@ nba-bot evaluate         # score resolved predictions → Brier / log-loss / CLV
 nba-bot serve                 # read-only API on http://127.0.0.1:8000
 cd dashboard && npm run dev   # the site on http://localhost:3000
 ```
-Tonight's slate with projected box scores, a searchable player table, a prop explorer
-for testing any line against a player's game log and the model, team matchup tables,
-the news reports, and the picks with their record. See [dashboard/README.md](dashboard/README.md).
+Tonight's slate and picks, each game's injury report and projected box score, a screener
+that ranks every player on the slate in any stat, fantasy projections, a prop explorer for testing any
+line against a player's game log and the model, team matchup tables, the news
+reports, and the picks with their record. See [dashboard/README.md](dashboard/README.md).
 
 ### Backtesting
 ```bash

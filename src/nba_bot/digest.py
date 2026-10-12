@@ -1,4 +1,5 @@
-"""Build the text messages: today's best bets, and last night's results."""
+"""Build the text messages: today's best bets, a late update when the injury
+report undercuts one, and last night's results."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from nba_bot.features.props import GUIDE_STATS, MARKET_LABELS
 
 _BOOKS = {"draftkings": "DK", "fanduel": "FD", "betmgm": "MGM", "williamhill_us": "Caesars",
           "espnbet": "ESPN", "betrivers": "Rivers", "fanatics": "Fanatics", "bovada": "Bovada",
-          "betonlineag": "BetOnline", "hardrockbet": "HardRock"}
+          "betonlineag": "BetOnline", "hardrockbet": "HardRock", "kalshi": "Kalshi"}
 
 
 def _american(decimal_odds: float) -> str:
@@ -27,6 +28,16 @@ def _stake(fraction: float) -> str:
     """Stake as units (1u = 1% of bankroll), plus dollars when a bankroll is set."""
     units = f"{fraction * 100:.1f}u"
     return f"{units} (${fraction * settings.bankroll:,.0f})" if settings.bankroll > 0 else units
+
+
+def _playable(odds, line=None, bet_line=None) -> str | None:
+    """How far the price (and a prop's line) can move before the bet is a pass."""
+    if odds is None:
+        return None
+    text = f"   Playable to {_american(float(odds))}"
+    if line is not None and float(line) != float(bet_line):
+        text += f", or to a line of {float(line):g} at the price above"
+    return text
 
 
 def _local_time(dt: datetime | None) -> str:
@@ -66,23 +77,24 @@ def best_bets(session: Session, game_date: date) -> str:
         lines.append("No bets today: nothing cleared the edge threshold.")
         return "\n".join(lines)
 
-    def tail(model: float, market: float, edge: float, stake: float, game_id: str) -> str:
-        when = _local_time(tips.get(game_id))
-        return (f"model {model:.0%}, mkt {market:.0%}, edge {edge:+.1%} | {_stake(stake)}"
-                + (f" | tip {when}" if when else ""))
+    def detail(bet, why: str | None, playable: str | None) -> list[str]:
+        when = _local_time(tips.get(bet.game_id))
+        numbers = (f"   model {float(bet.model_prob):.0%}, mkt {float(bet.market_prob):.0%}, "
+                   f"edge {float(bet.edge):+.1%} | {_stake(float(bet.stake_fraction))}"
+                   + (f" | tip {when}" if when else ""))
+        return [*([f"   Why: {why}"] if why else []), *([playable] if playable else []), numbers]
+
+    def book(key: str | None) -> str:
+        return _BOOKS.get(key, key or "")
 
     entries: list[tuple[float, list[str]]] = []
     for b in props:
-        book = _BOOKS.get(b.sportsbook, b.sportsbook)
         block = [
             f"{b.player_name} ({teams.get(b.team_id, '?')}) {b.side.upper()} {float(b.line):g} "
-            f"{MARKET_LABELS.get(b.market, b.market)} {_american(float(b.decimal_odds))} {book}",
-            f"   proj {float(b.proj_mean):.1f} in {float(b.proj_minutes or 0):.0f}m | "
-            + tail(float(b.model_prob), float(b.market_prob), float(b.edge),
-                   float(b.stake_fraction), b.game_id),
+            f"{MARKET_LABELS.get(b.market, b.market)} {_american(float(b.decimal_odds))} "
+            f"{book(b.sportsbook)}",
+            *detail(b, b.notes, _playable(b.playable_odds, b.playable_line, b.line)),
         ]
-        if b.notes:
-            block.append(f"   {b.notes}")
         if b.stat_guide:
             def bound(v) -> str:
                 return f"{v:g}" if v is not None else "–"
@@ -100,9 +112,8 @@ def best_bets(session: Session, game_date: date) -> str:
         where = "vs" if bet.side == "home" else "at"
         entries.append((float(bet.edge), [
             f"{teams.get(side, '?')} to win {where} {teams.get(other, '?')} "
-            f"{_american(float(bet.decimal_odds))} (avg price, shop for better)",
-            "   " + tail(float(bet.model_prob), float(bet.market_prob), float(bet.edge),
-                         float(bet.stake_fraction), bet.game_id),
+            f"{_american(float(bet.decimal_odds))} {book(bet.sportsbook)}".rstrip(),
+            *detail(bet, bet.reason, _playable(bet.playable_odds)),
         ]))
 
     entries.sort(key=lambda e: e[0], reverse=True)
@@ -115,6 +126,11 @@ def best_bets(session: Session, game_date: date) -> str:
         float(b.stake_fraction) for b, _ in game_bets)
     lines.append(f"\nTotal at risk: {_stake(total)}. Paper trading: verify the price before betting.")
     return "\n".join(lines)
+
+
+def pick_update(game_date: date, updates: list[str]) -> str:
+    """The late text: picks the newest injury report has undercut (`picks.recheck`)."""
+    return "\n".join([f"NBA pick update, {game_date:%a %b %-d}", *updates])
 
 
 def results(session: Session, since_hours: int = 30) -> str | None:

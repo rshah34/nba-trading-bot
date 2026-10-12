@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, Segmented, Select } from "@/components/ui";
+import { Card, PageState, Segmented, Select, TeamMark } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { num, signed, STAT_LABELS } from "@/lib/format";
 import type { StatKey, TeamRow, TeamsIndex } from "@/lib/types";
@@ -42,7 +42,8 @@ export default function TeamsPage() {
       header: "Team",
       sort: (t) => t.name,
       render: (t) => (
-        <Link href={`/teams/${t.id}`} className="font-medium text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+        <Link href={`/teams/${t.id}`} className="inline-flex items-center gap-2 font-medium text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+          <TeamMark abbr={t.abbr} />
           {t.name}
         </Link>
       ),
@@ -66,8 +67,7 @@ export default function TeamsPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight text-primary">Teams</h1>
       <p className="mt-1 max-w-2xl text-sm text-secondary">
-        Per-game numbers for {data.season}. &ldquo;Allowed&rdquo; is what opponents put up against a team — the place to
-        look for a soft matchup. The more strongly shaded a cell, the higher the value in its column.
+        Per game, {data.season}. Darker cells are higher; &ldquo;allowed&rdquo; is what opponents put up against a team.
       </p>
       <div className="my-4 flex flex-wrap items-center gap-2">
         <Segmented

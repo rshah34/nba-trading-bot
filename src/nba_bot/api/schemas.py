@@ -4,15 +4,7 @@ wire format is explicit and decoupled from the database schema.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
-
-
-class ModelInfo(BaseModel):
-    model_version: str
-    n_predictions: int
-    latest_as_of: datetime | None
 
 
 class CalibrationBin(BaseModel):

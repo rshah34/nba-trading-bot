@@ -118,6 +118,8 @@ class Injury(Base):
     player_name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the feed expects him back (migration 009). After a game's date = out for it.
+    return_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
@@ -207,6 +209,13 @@ class Bet(Base):
     edge: Mapped[float] = mapped_column(Numeric, nullable=False)
     stake_fraction: Mapped[float] = mapped_column(Numeric, nullable=False)
     decimal_odds: Mapped[float] = mapped_column(Numeric, nullable=False)
+    # Where the price was taken, the worst price still worth taking, and the one-line
+    # reason sent with the pick (migration 008).
+    sportsbook: Mapped[str | None] = mapped_column(String, nullable=True)
+    playable_odds: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when a late injury change undercut the pick and an update was texted.
+    flag: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Settlement (after the game resolves):
     closing_decimal_odds: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     clv: Mapped[float | None] = mapped_column(Numeric, nullable=True)
@@ -268,7 +277,13 @@ class PropBet(Base):
     proj_mean: Mapped[float] = mapped_column(Numeric, nullable=False)
     proj_phi: Mapped[float] = mapped_column(Numeric, nullable=False)
     proj_minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)   # the one-line reason
+    # The worst price (at this line) and the worst line (at this price) still worth
+    # taking (migration 008).
+    playable_odds: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    playable_line: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    # Set when a late injury change undercut the pick and an update was texted.
+    flag: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Single-stat guidance sent with the pick (migration 007): per stat, the
     # projection and the lines at which the model would take the over / the under.
     stat_guide: Mapped[dict | None] = mapped_column(JSON, nullable=True)

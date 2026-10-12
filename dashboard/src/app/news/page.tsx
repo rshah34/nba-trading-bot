@@ -26,8 +26,7 @@ export default function NewsPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight text-primary">News</h1>
       <p className="mt-1 max-w-2xl text-sm text-secondary">
-        What the bot has read out of eight NBA feeds: who is out, limited, returning, or changing role. Reports of the
-        same thing are merged, and the firmest and most widely reported come first.
+        Read from eight feeds and merged; the firmest reports come first.
       </p>
       <div className="my-4 flex flex-wrap items-center gap-2">
         <Segmented

@@ -33,6 +33,16 @@ def kelly_fraction(prob: float, decimal_odds: float) -> float:
     return (prob * decimal_odds - 1) / b
 
 
+# The price has to leave this much room under the probability we size on, or the bet
+# isn't worth making. It is also what "playable to" means in the text.
+PRICE_MARGIN = 0.005
+
+
+def playable_odds(bet_prob: float) -> float:
+    """The worst decimal price at which a bet at this probability is still worth making."""
+    return 1 / max(bet_prob - PRICE_MARGIN, 1e-6)
+
+
 @dataclass
 class BetDecision:
     side: str                    # "home" | "away" | "none"
@@ -44,6 +54,8 @@ class BetDecision:
     expected_value: float        # EV per unit staked (>0 required to bet)
     model_prob: float            # the model's own probability for the side bet
     reason: str
+    sportsbook: str | None = None       # where the price was taken, when books are named
+    playable_odds: float | None = None  # the worst price still worth taking
 
 
 def decide_bet_decimal(
@@ -51,6 +63,7 @@ def decide_bet_decimal(
     home_decimal: float,
     away_decimal: float,
     *,
+    prices: dict[str, tuple[str, float]] | None = None,
     market_weight: float = 0.0,
     min_edge: float = 0.04,
     max_edge: float | None = None,
@@ -66,6 +79,11 @@ def decide_bet_decimal(
     above `max_edge` is no bet either: a disagreement that large means the model is
     missing something the market knows. Stake = fractional Kelly (×
     `kelly_multiplier`), capped at `max_stake` of bankroll.
+
+    The two odds passed in are the market (its consensus). `prices` is what can
+    actually be had: {side: (sportsbook, decimal odds)} at the bettor's own books.
+    With it, the bet is priced there, and there is no bet if the side isn't offered
+    or the price leaves no room.
     """
     fair_home, fair_away = devig_two_way(1 / home_decimal, 1 / away_decimal)
     bet_home = market_weight * fair_home + (1 - market_weight) * model_home_prob
@@ -86,19 +104,19 @@ def decide_bet_decimal(
         return BetDecision("none", round(edge, 4), 0.0, round(p, 4), round(fair, 4), None, 0.0,
                            round(raw, 4), f"edge {edge:+.1%} is too large to trust — no bet")
 
+    book = None
+    if prices is not None:
+        book, odds = prices.get(side, (None, 0.0))
+        if odds < playable_odds(p):
+            return BetDecision("none", round(edge, 4), 0.0, round(p, 4), round(fair, 4), None,
+                               0.0, round(raw, 4), "no playable price at your books — no bet")
+
     stake = max(0.0, min(kelly_fraction(p, odds) * kelly_multiplier, max_stake))
     ev = p * (odds - 1) - (1 - p)
     return BetDecision(side, round(edge, 4), round(stake, 4), round(p, 4), round(fair, 4),
                        round(odds, 3), round(ev, 4), round(raw, 4),
-                       f"bet {side}: model {raw:.1%} vs market {fair:.1%}, edge {edge:+.1%}")
-
-
-def clv(bet_decimal_odds: float, closing_decimal_odds: float) -> float:
-    """Closing-line value in probability points: fair implied prob of our side at the
-    close minus at the odds we took. Positive = we beat the close (got a better price).
-    The single most reliable evidence of a real edge — it doesn't need the game to resolve.
-    """
-    return round(1 / closing_decimal_odds - 1 / bet_decimal_odds, 4)
+                       f"bet {side}: model {raw:.1%} vs market {fair:.1%}, edge {edge:+.1%}",
+                       book, round(playable_odds(p), 3))
 
 
 @dataclass
@@ -165,20 +183,30 @@ class PropDecision:
     sportsbook: str            # the book with the best price on that side
     line: float
     decimal_odds: float
-    n_books: int               # books quoting this exact line (consensus depth)
+    n_books: int               # books behind the consensus at this line
     model_prob: float          # raw model probability of the side winning
     market_prob: float         # de-vigged consensus probability of the side
     bet_prob: float            # model blended toward the market — what we size on
     edge: float                # bet_prob − market_prob
     expected_value: float      # EV per unit staked at the price taken
     stake_fraction: float
+    playable_odds: float       # the worst price still worth taking at this line
+    playable_line: float       # the worst line still worth taking at this price
+
+
+# How far a prop bet's probability leans on the market rather than the model.
+PROP_MARKET_WEIGHT = 0.5
+# A book whose line is further than this from the one being priced isn't quoting the
+# same bet, and is left out of the consensus.
+_MAX_LINE_GAP = 1.5
 
 
 def decide_prop(
     quotes: list[PropQuote],
     probs_at,
     *,
-    market_weight: float = 0.5,
+    books: frozenset[str] | None = None,
+    market_weight: float = PROP_MARKET_WEIGHT,
     min_edge: float = 0.03,
     max_edge: float = 0.10,
     min_books: int = 2,
@@ -187,56 +215,84 @@ def decide_prop(
 ) -> PropDecision | None:
     """Pick the best bet (if any) on one player-market across books and lines.
 
-    `probs_at(line)` returns the model's (P(over), P(under), P(push)) at a line, so
-    books hanging different numbers are each judged on their own line.
+    `probs_at(line)` returns the model's (P(over), P(under), P(push)) at a line.
+    `books` names the books the bettor can use: only their lines are bet, at the
+    best of their prices. Every book quoted still informs the consensus.
 
     Three guards, each there because the model is unproven against real books:
 
     * **Blend toward the market.** The line is itself a strong forecast, so we size
       on `market_weight` × market + the rest × model rather than on the raw model.
     * **Consensus, then best price.** Fair probability is the de-vigged average
-      across the books quoting the same line (`min_books` of them — a line only one
-      book hangs is usually stale or limited); the bet goes to the best price.
+      across at least `min_books` books. A book hanging a nearby line still counts:
+      its probability is carried to the line being priced with the model's own
+      distribution, so a book that is a point off the rest shows up as the edge it is.
     * **Too-good-to-be-true cap.** A blended edge above `max_edge` (a raw model
       gap twice that) almost always means the model is missing something — an
       injury, a role change — not that several books are that wrong at once.
 
     Stake is fractional Kelly on the blended probability, push-aware, capped.
     """
-    by_line: dict[float, list[PropQuote]] = {}
-    for q in quotes:
-        if q.over_decimal > 1 and q.under_decimal > 1:
-            by_line.setdefault(q.line, []).append(q)
+    usable = [q for q in quotes if q.over_decimal > 1 and q.under_decimal > 1]
+    mine = [q for q in usable if books is None or q.sportsbook in books]
+
+    def model_over(line: float) -> tuple[float, float]:
+        """(P(over) given no push, P(no push)) — a two-way price ignores the push."""
+        over, _under, push = probs_at(line)
+        return (over / (1 - push), 1 - push) if push < 1 else (0.5, 0.0)
 
     best: PropDecision | None = None
-    for line, group in by_line.items():
-        if len(group) < min_books:
-            continue
-        fair = [devig_two_way(1 / q.over_decimal, 1 / q.under_decimal) for q in group]
-        fair_over = sum(f[0] for f in fair) / len(fair)
-        p_over, p_under, p_push = probs_at(line)
-        live = 1 - p_push  # condition on the bet not pushing, to match a two-way price
+    for line in sorted({q.line for q in mine}):
+        over_here, live = model_over(line)
         if live <= 0:
             continue
+        nearest: dict[str, PropQuote] = {}
+        for q in usable:
+            cur = nearest.get(q.sportsbook)
+            if abs(q.line - line) <= _MAX_LINE_GAP and (
+                    cur is None or abs(q.line - line) < abs(cur.line - line)):
+                nearest[q.sportsbook] = q
+        if len(nearest) < min_books:
+            continue
+        fair = [
+            devig_two_way(1 / q.over_decimal, 1 / q.under_decimal)[0]
+            + (over_here - model_over(q.line)[0] if q.line != line else 0.0)
+            for q in nearest.values()
+        ]
+        fair_over = min(max(sum(fair) / len(fair), 0.01), 0.99)
+
         for side, model, market in (
-            ("over", p_over / live, fair_over),
-            ("under", p_under / live, 1 - fair_over),
+            ("over", over_here, fair_over),
+            ("under", 1 - over_here, 1 - fair_over),
         ):
             bet_prob = market_weight * market + (1 - market_weight) * model
             edge = bet_prob - market
             if edge < min_edge or edge > max_edge:
                 continue
-            quote = max(group, key=lambda q: q.over_decimal if side == "over" else q.under_decimal)
+            quote = max((q for q in mine if q.line == line),
+                        key=lambda q: q.over_decimal if side == "over" else q.under_decimal)
             odds = quote.over_decimal if side == "over" else quote.under_decimal
+            if odds < playable_odds(bet_prob):
+                continue
             win, lose = bet_prob * live, (1 - bet_prob) * live
             ev = win * (odds - 1) - lose
-            if ev <= 0:
-                continue
-            stake = min(max((win * (odds - 1) - lose) / (odds - 1), 0.0) * kelly_multiplier,
-                        max_stake)
-            d = PropDecision(side, quote.sportsbook, line, round(odds, 3), len(group),
+            stake = min(max(ev / (odds - 1), 0.0) * kelly_multiplier, max_stake)
+
+            # How far the line can move against us and still be a bet at this price:
+            # the market and the model shift together, so only the price has to hold.
+            def side_prob(ln: float, side: str = side) -> float:
+                over = model_over(ln)[0]
+                return over if side == "over" else 1 - over
+
+            playable_line, step = line, 0.5 if side == "over" else -0.5
+            while (abs(playable_line + step - line) <= _MAX_LINE_GAP and odds >= playable_odds(
+                    bet_prob + side_prob(playable_line + step) - side_prob(line))):
+                playable_line += step
+
+            d = PropDecision(side, quote.sportsbook, line, round(odds, 3), len(nearest),
                              round(model, 4), round(market, 4), round(bet_prob, 4),
-                             round(edge, 4), round(ev, 4), round(stake, 4))
+                             round(edge, 4), round(ev, 4), round(stake, 4),
+                             round(playable_odds(bet_prob), 3), playable_line)
             if best is None or d.expected_value > best.expected_value:
                 best = d
     return best

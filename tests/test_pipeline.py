@@ -81,3 +81,21 @@ def test_run_daily_with_no_games_only_settles(monkeypatch):
 
     assert "notify" not in result and "predict" not in result
     assert calls[-1] == "sync_news" and "sync_odds" not in calls
+
+
+def test_a_failed_step_rolls_back_so_the_next_one_can_run():
+    class FakeSession:
+        rolled_back = 0
+
+        def rollback(self):
+            self.rolled_back += 1
+
+    session = FakeSession()
+
+    def boom():
+        raise RuntimeError("constraint violated")
+
+    assert pipeline._step(session, "ingest", boom)["ok"] is False
+    assert session.rolled_back == 1          # the aborted transaction is cleared
+    assert pipeline._step(session, "news", lambda: 3) == {"ok": True, "result": 3}
+    assert session.rolled_back == 1

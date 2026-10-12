@@ -16,6 +16,7 @@
   --border: rgba(11, 11, 11, 0.1);
   --series-1: #2a78d6; /* the highlighted series (blue) */
   --series-rest: #c3c2b7; /* de-emphasized marks beside it */
+  --accent: #1c5fb5; /* interface accent: the current tab, links, section marks */
   --good: #006300; /* positive delta */
   --critical: #c4302f; /* negative delta */
   --warning: #fab219; /* status: uncertain — always shown with a label */
@@ -33,6 +34,7 @@
     --border: rgba(255, 255, 255, 0.1);
     --series-1: #3987e5;
     --series-rest: #4a4a46;
+    --accent: #7db4f5;
     --good: #0ca30c;
     --critical: #e05a59;
     --warning: #fab219;
@@ -50,6 +52,7 @@
   --border: rgba(255, 255, 255, 0.1);
   --series-1: #3987e5;
   --series-rest: #4a4a46;
+  --accent: #7db4f5;
   --good: #0ca30c;
   --critical: #e05a59;
   --warning: #fab219;
@@ -64,6 +67,7 @@
   --color-gridline: var(--gridline);
   --color-baseline: var(--baseline);
   --color-series-1: var(--series-1);
+  --color-accent: var(--accent);
   --color-good: var(--good);
   --color-critical: var(--critical);
   --color-warning: var(--warning);

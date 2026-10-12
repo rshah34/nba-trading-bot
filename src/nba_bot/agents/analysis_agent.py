@@ -126,12 +126,17 @@ def player_form(session: Session, team_id: int, as_of: date, n_games: int = 10,
     return players[:top_k]
 
 
-def current_injuries(session: Session, team_id: int, as_of: datetime) -> list[dict]:
+def current_injuries(
+    session: Session, team_id: int, as_of: datetime, game_date: date | None = None,
+) -> list[dict]:
     """A team's injuries on the most recent report at or before the cutoff.
 
     Each sync appends the whole league report, and a player who recovers simply stops
     being listed — so "latest row per player" would keep him injured forever. Only
     rows from the newest sync count.
+
+    With `game_date`, the status is the one that applies to that game: a player the
+    feed calls day-to-day but doesn't expect back until after it is Out.
     """
     latest = session.execute(
         select(func.max(Injury.reported_at)).where(Injury.reported_at <= as_of)
@@ -155,8 +160,23 @@ def current_injuries(session: Session, team_id: int, as_of: datetime) -> list[di
             continue
         seen.add(inj.player_name)
         if (inj.status or "").lower() in _RELEVANT_INJURY_STATUSES:
-            out.append({"player": inj.player_name, "status": inj.status, "reason": inj.reason})
+            ruled_out = (game_date is not None and inj.return_date is not None
+                         and inj.return_date > game_date)
+            out.append({"player": inj.player_name, "status": "Out" if ruled_out else inj.status,
+                        "reason": inj.reason, "return_date": inj.return_date})
     return out
+
+
+def recently_listed(session: Session, team_id: int, as_of: datetime, days: int = 4) -> set[str]:
+    """Everyone a team has had on an injury report in the last few days, whatever
+    his status now. A player who was listed and has since been cleared is coming
+    back, however long he was gone."""
+    return set(session.execute(
+        select(Injury.player_name).where(
+            Injury.team_id == team_id, Injury.reported_at <= as_of,
+            Injury.reported_at >= as_of - timedelta(days=days),
+        ).distinct()
+    ).scalars())
 
 
 def market_line(session: Session, game_id: str, as_of: datetime) -> MarketLine:
@@ -281,8 +301,8 @@ def predict_game(
 
     home_form = recent_form(session, game.home_team_id, game.game_date)
     away_form = recent_form(session, game.away_team_id, game.game_date)
-    home_inj = current_injuries(session, game.home_team_id, as_of)
-    away_inj = current_injuries(session, game.away_team_id, as_of)
+    home_inj = current_injuries(session, game.home_team_id, as_of, game.game_date)
+    away_inj = current_injuries(session, game.away_team_id, as_of, game.game_date)
     home_players = player_form(session, game.home_team_id, game.game_date)
     away_players = player_form(session, game.away_team_id, game.game_date)
     # News = the reports about these two teams that are most firmly and widely

@@ -20,11 +20,26 @@ The projection for one player-stat is
   offseason additions) everyone gives some up. Bench players move almost 1:1 with the
   ratio, starters much less. This is the largest single effect in the model — up to
   ±25–35% on a bench player's line — and it is why availability news matters so much.
+* **Stat budget**: the same idea per stat. A team's points, rebounds and assists
+  have to come from somebody, so when the available rotation's projections add up
+  to less than the team usually produces (its scorer or playmaker is out), the rest
+  pick it up, bench first. The best of the context effects: pooled error −0.4% on
+  the held-out season, and it removed the model's overconfidence in exactly the
+  games where teammates are out.
+* **Game context**: a player back from a layoff is eased in (the largest miss
+  before this: −5% to −18% of minutes after 2 to 9+ games out); the second night
+  of a back-to-back costs ~2.5% of production; a heavy favourite's starters sit
+  late; home court is worth ~1% of scoring. Each is small on its own. Measured on
+  2024-25 and confirmed on 2025-26 — all four together took pooled error from
+  2.721 to 2.705 with the rotation known.
 
-Tested and rejected on 2025-26: a per-player with/without split for an absent
-teammate. Even with perfect availability knowledge it made projections *worse* than
-no adjustment (a handful of games per split is noise), where the pooled budget ratio
-validated out-of-sample.
+Tested and rejected: a per-player with/without split for an absent teammate. Even
+with perfect availability knowledge it made projections *worse* than no adjustment
+(a handful of games per split is noise), where the pooled budgets validated
+out-of-sample. Also tested: widening the distribution whenever minutes look
+uncertain. Once the means above were fixed the spread was already honest (squared
+standardized error ≈ 1.0 in every bucket), so φ is only widened for a thin log, a
+layoff, or a debut.
 
 Counting stats are over-dispersed, so the distribution is negative binomial with
 variance = φ × mean, where φ blends the player's own variance/mean ratio with a
@@ -48,6 +63,8 @@ from nba_bot.data.nba_stats import is_preseason
 from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
 
 BASE_STATS = ("pts", "reb", "ast", "stl", "blk", "fg3m", "tov")
+# Shot counts ride along for fantasy scoring; they are not projected on their own.
+SHOOTING = ("fgm", "fga", "ftm", "fta")
 
 # Odds API market key -> the box-score stats it sums.
 MARKETS: dict[str, tuple[str, ...]] = {
@@ -110,6 +127,7 @@ _TEAM_COLUMN = {"pts": "points", "reb": "rebounds", "ast": "assists", "stl": "st
 ROTATION_MIN = 12.0
 ROTATION_BUDGET = 234.0
 _BUDGET_CLIP = (0.75, 1.4)
+BUDGET_UP_NOTE = "more minutes and shots with teammates out"
 # Elasticity of a player's minutes / stat means to the budget ratio r, as
 # multiplier = r ** beta, by projected minutes and by direction (r < 1 squeezes,
 # r > 1 frees minutes). From the 2025-26 actual/projected ratios: bench players track
@@ -118,6 +136,35 @@ _BUDGET_CLIP = (0.75, 1.4)
 _ROLE_ANCHORS = (19.5, 27.0, 33.0)            # bench, mid-rotation, starter
 _BETA_MINUTES = {"down": (0.9, 0.6, 0.4), "up": (0.7, 0.25, 0.0)}
 _BETA_STATS = {"down": (1.0, 0.8, 0.5), "up": (1.0, 0.45, 0.3)}
+
+# Game context: small, role-dependent effects of the schedule and the matchup. Each
+# was measured as actual ÷ projected on 2024-25 and held up on 2025-26; anchors are
+# (bench, mid-rotation, starter) like the budget's.
+_HOME_EDGE = {"pts": 0.008, "ast": 0.011, "fg3m": 0.017, "blk": 0.03}   # ± home / away
+_B2B_MULT = 0.975                   # production on the second night of a back-to-back
+HOME_COURT = 2.5                    # points, for the expected margin
+_BLOWOUT_FROM = 6.0                 # expected margin (points) where minutes start to move
+_BLOWOUT_PER_POINT = (0.004, 0.0, -0.005)   # bench plays more, a favourite's starters less
+# A player back from a layoff is eased in: minutes multiplier by team games missed.
+_LAYOFF = ((9, 0.83), (4, 0.92), (2, 0.955), (1, 0.985))
+_DEBUT_MULT = 0.80                  # first game for a new team
+# ...and he is harder to call: his outcomes spread wider than his history says.
+_LAYOFF_SPREAD = 1.08               # two or more games missed
+_DEBUT_SPREAD = 1.25
+# So is a player with a short log: φ is widened by up to this much at `min_games`,
+# fading to nothing at _THIN_LOG games.
+_THIN_SPREAD = 0.15
+_THIN_LOG = 20
+# Stat budget: a team's production has to come from somebody. The share of a team's
+# typical total that its rotation is projected for, and how much of a shortfall or
+# surplus each role absorbs (multiplier = ratio ** elasticity).
+_ROTATION_SHARE = {"pts": 0.97, "reb": 0.963, "ast": 0.98, "stl": 0.958, "blk": 0.955,
+                   "fg3m": 0.976, "tov": 0.95}
+_STAT_ELASTICITY = {"pts": (1.0, 0.5, 0.4), "reb": (0.7, 0.3, 0.1), "ast": (1.05, 0.6, 0.4),
+                    "stl": (0.5, 0.3, 0.0), "blk": (0.4, 0.2, 0.25), "fg3m": (0.7, 0.3, 0.1),
+                    "tov": (0.95, 0.6, 0.45)}
+_STAT_RATIO_CLIP = (0.8, 1.3)
+_FORM_MIN_GAMES = 5                 # team games this season before its totals are trusted
 
 
 _SUFFIXES = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b\.?")
@@ -167,6 +214,10 @@ class GameLine:
     blk: int = 0
     fg3m: int = 0
     tov: int = 0
+    fgm: int = 0
+    fga: int = 0
+    ftm: int = 0
+    fta: int = 0
 
     def value(self, market: str) -> int:
         return sum(getattr(self, s) for s in MARKETS[market])
@@ -179,9 +230,22 @@ class Adjustment:
     minutes_mult: float = 1.0
     stat_mults: dict[str, float] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    spread_mult: float = 1.0        # widens the distribution (φ) without moving the mean
 
     def mult(self, stat: str) -> float:
         return self.stat_mults.get(stat, 1.0)
+
+
+@dataclass(frozen=True)
+class Context:
+    """What is known about one team's game before tip, beyond its players' logs."""
+
+    game_date: date
+    team_id: int
+    home: bool
+    expected_margin: float = 0.0                    # points this team is expected to win by
+    team_totals: dict[str, float] | None = None     # typical team total per stat vs. this opponent
+    team_dates: tuple[date, ...] = ()               # the team's earlier games this season
 
 
 @dataclass
@@ -277,6 +341,18 @@ def _weights(n: int, half_life: float) -> list[float]:
     return [0.5 ** ((n - 1 - i) / half_life) for i in range(n)]
 
 
+def shooting_means(log: list[GameLine], pts_mean: float,
+                   params: Params = DEFAULT_PARAMS) -> dict[str, float]:
+    """Projected makes and attempts, for fantasy scoring: the player's own shots per
+    point (recency-weighted like his rates) times his projected points."""
+    log = log[-params.log_window:]
+    w = _weights(len(log), params.hl_rate)
+    pts = sum(wi * g.pts for wi, g in zip(w, log))
+    if pts <= 0:
+        return dict.fromkeys(SHOOTING, 0.0)
+    return {s: pts_mean * sum(wi * getattr(g, s) for wi, g in zip(w, log)) / pts for s in SHOOTING}
+
+
 def _phi(values: list[int], prior: float, prior_k: float) -> float:
     """Player variance/mean, shrunk toward the league prior by sample size."""
     n = len(values)
@@ -318,8 +394,10 @@ def project(
         means[s] = minutes * rate * opp.get(s, 1.0) * adj.mult(s)
 
     recent = log[-params.phi_window:]
+    spread = adj.spread_mult * (1 + _THIN_SPREAD * max(0.0, 1 - n / _THIN_LOG))
     phis = {
-        m: _phi([g.value(m) for g in recent], PHI_PRIOR[m], params.phi_prior_k) for m in MARKETS
+        m: spread * _phi([g.value(m) for g in recent], PHI_PRIOR[m], params.phi_prior_k)
+        for m in MARKETS
     }
     return Projection(
         minutes=round(minutes * adj.minutes_mult, 1),
@@ -341,6 +419,7 @@ def combine_adjustments(*adjs: Adjustment | None) -> Adjustment:
         for s, m in a.stat_mults.items():
             out.stat_mults[s] = out.stat_mults.get(s, 1.0) * m
         out.notes.extend(a.notes)
+        out.spread_mult *= a.spread_mult
     out.minutes_mult = min(max(out.minutes_mult, 0.5), 1.5)
     out.stat_mults = {s: min(max(m, 0.5), 1.5) for s, m in out.stat_mults.items()}
     return out
@@ -382,11 +461,73 @@ def budget_adjustment(projected_minutes: float, ratio: float) -> Adjustment:
     return Adjustment(
         minutes_mult=minutes_mult,
         stat_mults=dict.fromkeys(BASE_STATS, stat_mult),
-        notes=[
-            f"teammates out: more minutes and shots to go around (×{ratio:.2f})" if ratio > 1
-            else f"crowded rotation: fewer minutes to go around (×{ratio:.2f})"
-        ],
+        notes=[BUDGET_UP_NOTE if ratio > 1 else "fewer minutes in a full rotation"]
+        if abs(ratio - 1) >= 0.05 else [],
     )
+
+
+def layoff_adjustment(log: list[GameLine], ctx: Context) -> Adjustment | None:
+    """A player back from a layoff, or new to the team, is eased in. Minutes and
+    stats scale together: his per-minute rates hold up, his minutes don't."""
+    last = log[-1]
+    if last.team_id != ctx.team_id:
+        mult, spread, note = _DEBUT_MULT, _DEBUT_SPREAD, "first game for a new team"
+    else:
+        missed = sum(d > last.game_date for d in ctx.team_dates)
+        mult = next((m for n, m in _LAYOFF if missed >= n), 1.0)
+        spread = _LAYOFF_SPREAD if missed >= 2 else 1.0
+        note = f"eased back after missing {missed} game{'s' if missed != 1 else ''}"
+    if mult == 1.0:
+        return None
+    return Adjustment(mult, dict.fromkeys(BASE_STATS, mult), [note], spread)
+
+
+def context_adjustment(projected_minutes: float, ctx: Context) -> Adjustment:
+    """Home court, a back-to-back, and a likely blowout, by role."""
+    role, tired, notes = 1.0, 1.0, []
+    if ctx.team_dates and (ctx.game_date - ctx.team_dates[-1]).days == 1:
+        tired = _B2B_MULT
+        notes.append("second night of a back-to-back")
+    over = min(abs(ctx.expected_margin) - _BLOWOUT_FROM, 8.0)
+    if over > 0:
+        per_point = _interp(projected_minutes, _BLOWOUT_PER_POINT)
+        if per_point > 0 or ctx.expected_margin > 0:   # an underdog's starters keep playing
+            role *= 1 + per_point * over
+            if per_point * over < -0.015:
+                notes.append("heavy favourite: starters may sit late")
+    home = 1 if ctx.home else -1
+    return Adjustment(
+        minutes_mult=role,
+        stat_mults={s: role * tired * (1 + home * _HOME_EDGE.get(s, 0.0)) for s in BASE_STATS},
+        notes=notes,
+    )
+
+
+def _recent_average(log: list[GameLine], attr: str) -> float:
+    recent = log[-5:]
+    return sum(getattr(g, attr) for g in recent) / len(recent) if recent else 0.0
+
+
+def _share_stats(
+    final: dict[int, Projection], rotation: dict[int, Projection],
+    unprojected: list[list[GameLine]], team_totals: dict[str, float],
+) -> None:
+    """Stat budget: scale each stat toward what the team typically produces.
+
+    When the rotation's projections add up to less than the team's usual total
+    (the players who normally supply it are out), the rest pick it up — bench
+    players nearly in full, starters about half. In place.
+    """
+    extras = [lg for lg in unprojected if _recent_average(lg, "minutes") >= ROTATION_MIN]
+    for s in BASE_STATS:
+        total = sum(p.means[s] for p in rotation.values() if p.minutes >= ROTATION_MIN)
+        total += sum(_recent_average(lg, s) for lg in extras)
+        if total <= 0:
+            continue
+        ratio = _ROTATION_SHARE[s] * team_totals[s] / total
+        ratio = min(max(ratio, _STAT_RATIO_CLIP[0]), _STAT_RATIO_CLIP[1])
+        for p in final.values():
+            p.means[s] *= ratio ** _interp(p.minutes, _STAT_ELASTICITY[s])
 
 
 def project_team(
@@ -394,59 +535,78 @@ def project_team(
     *,
     opp_factors: dict[str, float] | None = None,
     extra: dict[int, Adjustment] | None = None,
+    context: Context | None = None,
     use_budget: bool = True,
     budget_from: dict[int, list[GameLine]] | None = None,
     fallback_minutes: dict[int, float] | None = None,
     params: Params = DEFAULT_PARAMS,
 ) -> dict[int, Projection]:
-    """Project every available player on one team, sharing one minutes budget.
+    """Project every available player on one team, sharing one minutes budget and
+    one stat budget.
 
     `logs` holds each available player's prior games. `extra` carries per-player
     news adjustments; they apply before the budget so a player on a minutes limit
-    frees minutes for the rest. `budget_from` overrides which players define the
-    budget (the backtest's "assume last game's rotation" mode); by default it is
-    the players being projected.
+    frees minutes for the rest. `context` adds what is known about the game itself
+    (venue, rest, expected margin, layoffs, the team's typical totals). `budget_from`
+    overrides which players define the budgets (the backtest's "assume last game's
+    rotation" mode); by default it is the players being projected.
 
     A player too new to project still takes minutes from everyone else, so he counts
     toward the budget at his short-sample average, or at `fallback_minutes` (e.g.
     preseason) when he has no games at all. Leaving rookies out makes a rotation look
     short-handed and inflates every teammate.
     """
-    extra = extra or {}
     fallback_minutes = fallback_minutes or {}
+    pre = dict(extra or {})
+    if context is not None:
+        for pid, log in logs.items():
+            news = pre.get(pid)
+            if not log or (news is not None and news.minutes_mult < 1):
+                continue   # the news already says how limited he is
+            layoff = layoff_adjustment(log, context)
+            if layoff is not None:
+                pre[pid] = combine_adjustments(news, layoff)
 
     def first_pass(source: dict[int, list[GameLine]]) -> dict[int, Projection]:
         out = {}
         for pid, log in source.items():
-            proj = project(log, opp_factors=opp_factors, adjustment=extra.get(pid), params=params)
+            proj = project(log, opp_factors=opp_factors, adjustment=pre.get(pid), params=params)
             if proj is not None:
                 out[pid] = proj
         return out
 
     base = first_pass(logs)
-    if not use_budget:
-        return base
     source = logs if budget_from is None else budget_from
     pool = base if budget_from is None else first_pass(budget_from)
-    pool_minutes = [p.minutes for p in pool.values()]
-    for pid, log in source.items():
-        if pid in pool:
-            continue
-        recent = log[-5:]
-        pool_minutes.append(sum(g.minutes for g in recent) / len(recent) if recent
-                            else fallback_minutes.get(pid, 0.0))
-    ratio = budget_ratio(pool_minutes)
+    ratio = 1.0
+    if use_budget:
+        pool_minutes = [p.minutes for p in pool.values()]
+        pool_minutes += [
+            _recent_average(log, "minutes") if log else fallback_minutes.get(pid, 0.0)
+            for pid, log in source.items() if pid not in pool
+        ]
+        ratio = budget_ratio(pool_minutes)
 
-    final: dict[int, Projection] = {}
-    for pid, proj in base.items():
-        news = extra.get(pid)
-        # A player the news already caps doesn't also soak up spare minutes.
-        capped = news is not None and news.minutes_mult < 1 and ratio > 1
-        budget = None if capped else budget_adjustment(proj.minutes, ratio)
-        final[pid] = project(
-            logs[pid], opp_factors=opp_factors,
-            adjustment=combine_adjustments(news, budget), params=params,
+    def finalize(pid: int, log: list[GameLine], proj: Projection) -> Projection:
+        limited = pre.get(pid)
+        # A player already held back doesn't also soak up spare minutes.
+        capped = limited is not None and limited.minutes_mult < 1 and ratio > 1
+        return project(
+            log, opp_factors=opp_factors, params=params,
+            adjustment=combine_adjustments(
+                limited,
+                None if capped else budget_adjustment(proj.minutes, ratio),
+                context_adjustment(proj.minutes, context) if context is not None else None,
+            ),
         )
+
+    final = {pid: finalize(pid, logs[pid], proj) for pid, proj in base.items()}
+    if use_budget and context is not None and context.team_totals:
+        rotation = final if budget_from is None else {
+            pid: finalize(pid, budget_from[pid], proj) for pid, proj in pool.items()
+        }
+        _share_stats(final, rotation, [lg for pid, lg in source.items() if pid not in pool],
+                     context.team_totals)
     return final
 
 
@@ -529,6 +689,56 @@ class PropsData:
         return out
 
 
+@dataclass(frozen=True)
+class TeamForm:
+    """One team's season so far, as of a date."""
+
+    margin: float                   # average point margin, shrunk toward 0
+    totals: dict[str, float] | None  # per-game team totals; None until there are enough games
+    dates: tuple[date, ...]
+
+
+def team_form(data: PropsData, as_of: date, season: str) -> dict[int, TeamForm]:
+    """Every team's form from this season's games before `as_of`."""
+    out: dict[int, TeamForm] = {}
+    for team, games in data.team_games.items():
+        prior = [g for g in games if g.season == season and g.game_date < as_of]
+        margin, sums, n = 0.0, dict.fromkeys(BASE_STATS, 0.0), 0
+        for g in prior:
+            mine = data.team_box.get((g.game_id, team))
+            theirs = data.team_box.get((g.game_id, g.away_id if team == g.home_id else g.home_id))
+            if mine is None or theirs is None:
+                continue
+            margin += mine["pts"] - theirs["pts"]
+            for s in BASE_STATS:
+                sums[s] += mine[s]
+            n += 1
+        out[team] = TeamForm(
+            margin=margin / (n + 10),
+            totals={s: v / n for s, v in sums.items()} if n >= _FORM_MIN_GAMES else None,
+            dates=tuple(g.game_date for g in prior),
+        )
+    return out
+
+
+def game_context(
+    form: dict[int, TeamForm], team_id: int, opp_id: int, home: bool, game_date: date,
+    opp_factors: dict[str, float] | None,
+) -> Context:
+    """The pre-game context for one team. Blind to the betting line: the expected
+    margin comes from point differentials, not from a spread."""
+    mine, theirs = form.get(team_id), form.get(opp_id)
+    margin = (mine.margin if mine else 0.0) - (theirs.margin if theirs else 0.0)
+    totals = None
+    if mine is not None and mine.totals is not None:
+        totals = {s: v * (opp_factors or {}).get(s, 1.0) for s, v in mine.totals.items()}
+    return Context(
+        game_date=game_date, team_id=team_id, home=home,
+        expected_margin=margin + (HOME_COURT if home else -HOME_COURT),
+        team_totals=totals, team_dates=mine.dates if mine else (),
+    )
+
+
 def load_props_data(session: Session) -> PropsData:
     """Load every stored box score into a PropsData snapshot."""
     games = session.execute(
@@ -579,6 +789,7 @@ def load_props_data(session: Session) -> PropsData:
                 opp_id=g.away_id if r.team_id == g.home_id else g.home_id, minutes=minutes,
                 pts=r.points or 0, reb=r.rebounds or 0, ast=r.assists or 0, stl=r.steals or 0,
                 blk=r.blocks or 0, fg3m=r.fg3m or 0, tov=r.turnovers or 0,
+                fgm=r.fgm or 0, fga=r.fga or 0, ftm=r.ftm or 0, fta=r.fta or 0,
             )
         )
     for log in logs.values():

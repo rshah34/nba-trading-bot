@@ -28,13 +28,17 @@ from nba_bot.db.models import (
 from nba_bot.features.props import (
     MARKET_LABELS,
     MARKETS,
+    SHOOTING,
     GameLine,
     Projection,
     PropsData,
+    game_context,
     load_props_data,
     normalize_name,
     project_team,
+    shooting_means,
     stat_guide,
+    team_form,
 )
 
 STATS = ("pts", "reb", "ast", "fg3m", "stl", "blk", "tov")
@@ -75,7 +79,7 @@ def averages(lines: list[GameLine], last: int | None = None) -> dict | None:
         return None
     n = len(rows)
     out = {"gp": n, "min": round(sum(g.minutes for g in rows) / n, 1)}
-    for s in STATS:
+    for s in STATS + SHOOTING:
         out[s] = round(sum(getattr(g, s) for g in rows) / n, 1)
     return out
 
@@ -148,6 +152,21 @@ def _next_game(session: Session, team_id: int, today: date) -> Game | None:
     ).scalar_one_or_none()
 
 
+# An absence expected to last longer than this is a standing fact about the team, not
+# news about tonight: the page lists it in one line instead of in full.
+_LONG_TERM = timedelta(days=21)
+
+
+def _injury_rows(session: Session, team_id: int, now: datetime, game_date: date) -> list[dict]:
+    """A team's injury report as it applies to one game: who is out of it, who is in
+    doubt, and who is gone for the long haul."""
+    return [
+        {"player": i["player"], "status": i["status"], "detail": i["reason"],
+         "long_term": i["return_date"] is not None and i["return_date"] - game_date > _LONG_TERM}
+        for i in analysis_agent.current_injuries(session, team_id, now, game_date)
+    ]
+
+
 def _report(r: news_agent.Report, teams: dict[int, dict]) -> dict:
     s = r.signal
     team = teams.get(s.team_id)
@@ -188,13 +207,13 @@ def player_detail(session: Session, player_id: int) -> dict | None:
            "seasons": _seasons(data),
            "games": games, "next": None, "projection": None, "status": None,
            "lines": {}, "reports": []}
-    signals = news_agent.active_signals(session, now)
-    out["reports"] = [_report(r, teams) for r in news_agent.consolidate(signals.get(player_id, []))]
+    nxt = _next_game(session, team_id, today) if team_id is not None else None
+    slate = props_agent.slate_for(session, data, nxt.game_date if nxt else today, now)
+    out["reports"] = [_report(r, teams)
+                      for r in news_agent.consolidate(slate.signals.get(player_id, []))]
     if team_id is None:
         return out
 
-    nxt = _next_game(session, team_id, today)
-    game_date = nxt.game_date if nxt else today
     opp_id = None
     if nxt is not None:
         opp_id = nxt.away_team_id if nxt.home_team_id == team_id else nxt.home_team_id
@@ -206,13 +225,13 @@ def player_detail(session: Session, player_id: int) -> dict | None:
             if cons is not None:
                 out["lines"][market] = {"line": cons[0], "books": cons[1], "over": round(cons[2], 3)}
 
-    factors = data.opponent_factors(game_date, _season_for_date(game_date)).get(opp_id)
-    view = props_agent.team_view(session, data, team_id, factors, game_date, now, signals)
+    view = props_agent.team_view(session, data, slate, team_id, opp_id,
+                                 nxt is not None and nxt.home_team_id == team_id)
     proj = view.projections.get(player_id)
     if proj is not None:
         out["projection"] = _projection_payload(proj)
     name = normalize_name(data.names[player_id])
-    listed = next((i for i in analysis_agent.current_injuries(session, team_id, now)
+    listed = next((i for i in analysis_agent.current_injuries(session, team_id, now, slate.game_date)
                    if normalize_name(i["player"]) == name), None)
     if listed is not None:
         out["status"] = {"label": listed["status"], "detail": listed["reason"]}
@@ -246,11 +265,13 @@ def _pick_rows(session: Session, where, teams: dict[int, dict]) -> list[dict]:
             "matchup": f"{teams[game.away_team_id]['abbr']} @ {teams[game.home_team_id]['abbr']}",
             "label": f"{teams[side]['abbr']} to win {'vs' if bet.side == 'home' else 'at'} "
                      f"{teams[other]['abbr']}",
-            "player_id": None, "book": None, "odds": _f(bet.decimal_odds),
+            "player_id": None, "book": bet.sportsbook, "odds": _f(bet.decimal_odds),
             "model": _f(bet.model_prob), "market": _f(bet.market_prob), "edge": _f(bet.edge),
             "stake": _f(bet.stake_fraction), "pnl": _f(bet.pnl), "clv": _f(bet.clv),
             "result": None if bet.settled_at is None else ("won" if bet.won else "lost"),
-            "actual": None, "notes": None, "guide": None,
+            "actual": None, "notes": bet.reason, "guide": None,
+            "line": None, "playable_odds": _f(bet.playable_odds), "playable_line": None,
+            "flag": bet.flag,
         })
     for bet, game in session.execute(
         select(PropBet, Game).join(Game, PropBet.game_id == Game.game_id).where(where)
@@ -265,36 +286,65 @@ def _pick_rows(session: Session, where, teams: dict[int, dict]) -> list[dict]:
             "model": _f(bet.model_prob), "market": _f(bet.market_prob), "edge": _f(bet.edge),
             "stake": _f(bet.stake_fraction), "pnl": _f(bet.pnl), "clv": _f(bet.clv),
             "result": bet.result, "actual": _f(bet.actual_value), "notes": bet.notes,
-            "guide": bet.stat_guide,
+            "guide": bet.stat_guide, "line": _f(bet.line),
+            "playable_odds": _f(bet.playable_odds), "playable_line": _f(bet.playable_line),
+            "flag": bet.flag,
         })
     rows.sort(key=lambda r: r["decided_at"] or "", reverse=True)
     return rows
 
 
-def _records(session: Session, data: PropsData) -> dict[int, str]:
-    """team -> "W-L" for the newest season with games played."""
-    seasons = _seasons(data)
-    if not seasons:
-        return {}
-    return {tid: f"{t['w']}-{t['gp'] - t['w']}"
-            for tid, t in _team_totals(session, data, seasons[0]).items()}
+_PLAYOFFS = "004"
 
 
-def _game_card(session: Session, game: Game, teams: dict[int, dict],
-               records: dict[int, str]) -> dict:
+def _standing(session: Session, game: Game, cache: dict) -> dict:
+    """What to show beside each team in a game: its record in that kind of game
+    (preseason or regular season) through the game's date, or — in the playoffs —
+    where the series stands. `cache` is shared across one page's games."""
+    kind = game.game_id[:3]
+    series = kind == _PLAYOFFS
+    # A playoff game id ends in round, series, game number: all but the last digit name the series.
+    scope = game.game_id[:-1] if series else (kind if kind == "001" else "002")
+    key = (game.season, scope, game.game_date)
+    if key not in cache:
+        wins: dict[int, list[int]] = {}
+        for home, away, hs, as_ in session.execute(
+            select(Game.home_team_id, Game.away_team_id, Game.home_score, Game.away_score)
+            .where(Game.season == game.season, Game.game_id.like(f"{scope}%"),
+                   Game.status == "final", Game.home_score.is_not(None),
+                   Game.game_date <= game.game_date)
+        ):
+            for team, won in ((home, hs > as_), (away, as_ > hs)):
+                tally = wins.setdefault(team, [0, 0])
+                tally[0 if won else 1] += 1
+        cache[key] = wins
+    wins = cache[key]
+    if not series:
+        return {"records": {t: f"{won}-{lost}" for t, (won, lost) in wins.items()}, "series": None}
+    home, away = wins.get(game.home_team_id, [0, 0])[0], wins.get(game.away_team_id, [0, 0])[0]
+    return {"records": {}, "series": {"home": home, "away": away}}
+
+
+def _game_card(session: Session, game: Game, teams: dict[int, dict], cache: dict) -> dict:
     pred = session.execute(
         select(Prediction)
         .where(Prediction.game_id == game.game_id,
                Prediction.model_version == settings.analysis_model)
         .order_by(Prediction.as_of.desc()).limit(1)
     ).scalar_one_or_none()
+    standing = _standing(session, game, cache)
+
+    def record(team_id: int) -> str | None:
+        return None if standing["series"] else standing["records"].get(team_id, "0-0")
+
     return {
         "game_id": game.game_id, "date": game.game_date.isoformat(), "status": game.status,
         "preseason": is_preseason(game.game_id), "tipoff_at": _iso(game.tipoff_at),
+        "series": standing["series"],
         "home": {**teams[game.home_team_id], "score": game.home_score,
-                 "record": records.get(game.home_team_id)},
+                 "record": record(game.home_team_id)},
         "away": {**teams[game.away_team_id], "score": game.away_score,
-                 "record": records.get(game.away_team_id)},
+                 "record": record(game.away_team_id)},
         "model_home_prob": _f(pred.predicted_home_win_prob) if pred else None,
         "market_home_prob": _market_home_prob(session, game.game_id),
         "reasoning": pred.reasoning if pred else None,
@@ -304,7 +354,7 @@ def _game_card(session: Session, game: Game, teams: dict[int, dict],
 
 def slate(session: Session, on: date | None) -> dict:
     teams = team_map(session)
-    records = _records(session, props_data(session))
+    cache: dict = {}
     if on is None:
         today = date.today()
         on = (session.execute(select(func.min(Game.game_date)).where(Game.game_date >= today))
@@ -321,9 +371,76 @@ def slate(session: Session, on: date | None) -> dict:
         "date": on.isoformat(),
         "prev": before.isoformat() if before else None,
         "next": after.isoformat() if after else None,
-        "games": [_game_card(session, g, teams, records) for g in games],
+        "games": [_game_card(session, g, teams, cache) for g in games],
         "picks": _pick_rows(session, Game.game_date == on, teams),
     }
+
+
+def slate_players(session: Session, on: date | None) -> dict:
+    """Every projected player on one upcoming date: who is playing, for how long,
+    and what he is projected for. One payload feeds the screener and fantasy pages."""
+    data, teams = props_data(session), team_map(session)
+    now, today = datetime.now(timezone.utc), date.today()
+    upcoming = Game.status == "scheduled", Game.game_date >= today
+    dates = list(session.execute(
+        select(Game.game_date).where(*upcoming).distinct().order_by(Game.game_date).limit(7)
+    ).scalars())
+    if on not in dates:
+        on = dates[0] if dates else None
+    out = {"date": on and on.isoformat(), "dates": [d.isoformat() for d in dates],
+           "games": [], "players": []}
+    if on is None:
+        return out
+
+    slate = props_agent.slate_for(session, data, on, now)
+    games = session.execute(
+        select(Game).where(Game.game_date == on, Game.status == "scheduled")
+        .order_by(Game.tipoff_at, Game.game_id)
+    ).scalars().all()
+    for game in games:
+        quotes = props_agent.latest_quotes(session, game.game_id)
+        sides = []
+        for team_id, opp_id in ((game.away_team_id, game.home_team_id),
+                                (game.home_team_id, game.away_team_id)):
+            home = team_id == game.home_team_id
+            view = props_agent.team_view(session, data, slate, team_id, opp_id, home)
+            sides.append({
+                **teams[team_id],
+                # What the opponent gives up in each stat against the league (1.0 = average).
+                "matchup": {s: round(f, 3) for s, f in (slate.factors.get(opp_id) or {}).items()},
+            })
+            for pid, proj in view.projections.items():
+                if proj.minutes < 5:
+                    continue
+                log = data.log_before(pid, on)
+                lines = {}
+                for market in MARKETS:
+                    cons = props_agent.consensus(quotes.get((pid, market), []))
+                    if cons is None:
+                        continue
+                    line, books, market_over = cons
+                    over, _under, push = proj.probs(market, line)
+                    last = log[-10:]
+                    lines[market] = {
+                        "line": line, "books": books, "market_over": round(market_over, 3),
+                        "model_over": round(over / (1 - push), 3) if push < 1 else None,
+                        "hits": sum(g.value(market) > line for g in last), "games": len(last),
+                    }
+                shots = shooting_means(log, proj.means["pts"])
+                out["players"].append({
+                    "id": pid, "name": data.names[pid], "team": teams[team_id]["abbr"],
+                    "team_id": team_id, "opp": teams[opp_id]["abbr"], "home": home,
+                    "game_id": game.game_id, "status": view.blocked.get(pid), "notes": proj.notes,
+                    "proj": {"min": proj.minutes,
+                             **{s: round(proj.means[s], 2) for s in STATS},
+                             **{s: round(v, 2) for s, v in shots.items()}},
+                    "season": averages([g for g in log if g.season == log[-1].season]),
+                    "l5": averages(log, 5), "lines": lines,
+                })
+        out["games"].append({"game_id": game.game_id, "tipoff_at": _iso(game.tipoff_at),
+                             "preseason": is_preseason(game.game_id),
+                             "away": sides[0], "home": sides[1]})
+    return out
 
 
 def _player_row(pid: int, name: str, proj: Projection | None, status: str | None,
@@ -344,9 +461,13 @@ def game_detail(session: Session, game_id: str) -> dict | None:
         return None
     data, teams = props_data(session), team_map(session)
     now = datetime.now(timezone.utc)
-    factors = data.opponent_factors(game.game_date, _season_for_date(game.game_date))
     final = game.status == "final"
-    signals = {} if final else news_agent.active_signals(session, now)
+    if final:
+        season = _season_for_date(game.game_date)
+        factors = data.opponent_factors(game.game_date, season)
+        form = team_form(data, game.game_date, season)
+    else:
+        slate = props_agent.slate_for(session, data, game.game_date, now)
 
     sides = []
     for team_id, opp_id in ((game.away_team_id, game.home_team_id),
@@ -360,22 +481,23 @@ def game_detail(session: Session, game_id: str) -> dict | None:
                                               PlayerGameStats.minutes > 0)).scalars()}
             projections = project_team(
                 {pid: data.log_before(pid, game.game_date) for pid in played},
-                opp_factors=factors.get(opp_id))
+                opp_factors=factors.get(opp_id),
+                context=game_context(form, team_id, opp_id, team_id == game.home_team_id,
+                                     game.game_date, factors.get(opp_id)))
             rows = [_player_row(pid, r.player_name, projections.get(pid), None, r)
                     for pid, r in played.items()]
             rows.sort(key=lambda r: r["actual"]["min"], reverse=True)
         else:
-            view = props_agent.team_view(session, data, team_id, factors.get(opp_id),
-                                         game.game_date, now, signals)
+            view = props_agent.team_view(session, data, slate, team_id, opp_id,
+                                         team_id == game.home_team_id)
             rows = [_player_row(pid, data.names[pid], p, view.blocked.get(pid), None)
                     for pid, p in view.projections.items() if p.minutes >= 5]
             rows.sort(key=lambda r: r["proj"]["min"], reverse=True)
-            out = [{"player": i["player"], "status": i["status"], "detail": i["reason"]}
-                   for i in analysis_agent.current_injuries(session, team_id, now)]
+            out = _injury_rows(session, team_id, now, game.game_date)
             reports = [_report(r, teams) for r in news_agent.team_news(session, [team_id], now)]
         sides.append({"team": teams[team_id], "players": rows, "injuries": out, "reports": reports})
 
-    card = _game_card(session, game, teams, _records(session, data))
+    card = _game_card(session, game, teams, {})
     card.update({"away_side": sides[0], "home_side": sides[1],
                  "picks": _pick_rows(session, Game.game_id == game_id, teams)})
     return card
@@ -440,7 +562,8 @@ def team_detail(session: Session, team_id: int) -> dict | None:
     season = seasons[0] if seasons else ""
     newest = max(data.last_seen.values(), default=today)
 
-    injuries = analysis_agent.current_injuries(session, team_id, now)
+    nxt = _next_game(session, team_id, today)
+    injuries = _injury_rows(session, team_id, now, nxt.game_date if nxt else today)
     listed = {normalize_name(i["player"]): i["status"] for i in injuries}
     roster = []
     for pid, team in data.current_team.items():
@@ -467,7 +590,6 @@ def team_detail(session: Session, team_id: int) -> dict | None:
                         "opp": teams[g.away_team_id if home else g.home_team_id]["abbr"],
                         "result": f"{'W' if mine > theirs else 'L'} {mine}-{theirs}",
                         "preseason": is_preseason(g.game_id)})
-    nxt = _next_game(session, team_id, today)
     return {
         **_team_summary(teams[team_id], _team_totals(session, data, season).get(team_id)),
         "season": season, "roster": roster, "results": results,
@@ -475,8 +597,7 @@ def team_detail(session: Session, team_id: int) -> dict | None:
                          "home": nxt.home_team_id == team_id,
                          "opp": teams[nxt.away_team_id if nxt.home_team_id == team_id
                                       else nxt.home_team_id]["abbr"]},
-        "injuries": [{"player": i["player"], "status": i["status"], "detail": i["reason"]}
-                     for i in injuries],
+        "injuries": injuries,
         "reports": [_report(r, teams) for r in news_agent.team_news(session, [team_id], now, 12)],
     }
 

@@ -1,5 +1,5 @@
 """FastAPI app serving the dashboard: tonight's slate, players, teams, news, the
-picks and their record, and the game model's backtest metrics.
+picks and their record, and the live game model's accuracy.
 
 Read-only: the pipeline writes to Postgres; this layer only serves what's there, so
 the dashboard stays a thin client. Run locally with `uv run nba-bot serve`.
@@ -12,13 +12,12 @@ from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nba_bot.api import schemas, views
 from nba_bot.backtest.report import build_report
+from nba_bot.config import settings
 from nba_bot.db.engine import SessionLocal
-from nba_bot.db.models import Prediction
 
 app = FastAPI(
     title="NBA Trading Bot API",
@@ -58,6 +57,15 @@ def slate(
 ) -> dict:
     """One day's games with the model's and the market's view of each, plus that day's picks."""
     return views.slate(session, on)
+
+
+@app.get("/slate/players")
+def slate_players(
+    session: Session = Depends(get_session),
+    on: date | None = Query(None, alias="date", description="Defaults to the next day with games."),
+) -> dict:
+    """Every projected player on an upcoming date: availability, minutes, projections."""
+    return views.slate_players(session, on)
 
 
 @app.get("/games/{game_id}")
@@ -118,37 +126,8 @@ def picks(session: Session = Depends(get_session)) -> dict:
     return views.picks(session)
 
 
-@app.get("/models", response_model=list[schemas.ModelInfo])
-def list_models(session: Session = Depends(get_session)) -> list[schemas.ModelInfo]:
-    """Game-model versions with predictions on record, most predictions first."""
-    rows = session.execute(
-        select(
-            Prediction.model_version,
-            func.count().label("n"),
-            func.max(Prediction.as_of).label("latest"),
-        )
-        .group_by(Prediction.model_version)
-        .order_by(func.count().desc())
-    ).all()
-    return [
-        schemas.ModelInfo(model_version=r.model_version, n_predictions=r.n, latest_as_of=r.latest)
-        for r in rows
-    ]
-
-
-@app.get("/backtest", response_model=schemas.BacktestReport)
-def backtest(
-    session: Session = Depends(get_session),
-    model_version: str | None = Query(None, description="Defaults to the most-predicted model."),
-) -> schemas.BacktestReport:
-    """Accuracy, Brier, log-loss and calibration for one game-model version."""
-    if model_version is None:
-        model_version = session.execute(
-            select(Prediction.model_version)
-            .group_by(Prediction.model_version)
-            .order_by(func.count().desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if model_version is None:
-            raise HTTPException(status_code=404, detail="no predictions on record")
-    return schemas.BacktestReport(**build_report(session, model_version))
+@app.get("/game-model", response_model=schemas.BacktestReport)
+def game_model(session: Session = Depends(get_session)) -> schemas.BacktestReport:
+    """How the game model now in use has done on the games it predicted live:
+    accuracy, Brier, log-loss and calibration. Empty until its first games are graded."""
+    return schemas.BacktestReport(**build_report(session, settings.analysis_model))

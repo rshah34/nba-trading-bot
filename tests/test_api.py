@@ -25,8 +25,8 @@ def test_health_needs_no_database():
 
 def test_routes_are_registered():
     paths = {r.path for r in api.app.routes}
-    assert {"/health", "/slate", "/games/{game_id}", "/directory", "/players", "/players/{player_id}", "/teams",
-            "/teams/{team_id}", "/news", "/picks", "/models", "/backtest"} <= paths
+    assert {"/health", "/slate", "/slate/players", "/games/{game_id}", "/directory", "/players", "/players/{player_id}", "/teams",
+            "/teams/{team_id}", "/news", "/picks", "/game-model"} <= paths
 
 
 def test_averages_over_a_season_and_a_recent_window():
@@ -34,7 +34,8 @@ def test_averages_over_a_season_and_a_recent_window():
     season = views.averages(log)
     assert (season["gp"], season["pts"], season["min"]) == (15, 14.0, 23.3)
     assert views.averages(log, 5) == {"gp": 5, "min": 30.0, "pts": 22.0, "reb": 5.0, "ast": 4.0,
-                                      "fg3m": 0.0, "stl": 0.0, "blk": 0.0, "tov": 0.0}
+                                      "fg3m": 0.0, "stl": 0.0, "blk": 0.0, "tov": 0.0,
+                                      "fgm": 0.0, "fga": 0.0, "ftm": 0.0, "fta": 0.0}
     assert views.averages([]) is None
 
 
@@ -81,3 +82,13 @@ def test_ladder_is_a_falling_probability_at_every_half_point():
     assert probs == sorted(probs, reverse=True)          # a higher line is harder to clear
     assert probs[0] > 0.99 and probs[-1] < 0.05          # and the ladder spans the range
     assert lines[-1] > 24                                # well past the projection
+
+
+def test_injury_return_date_is_read_or_left_empty():
+    from datetime import date
+
+    from nba_bot.data.injuries import _return_date
+
+    assert _return_date({"details": {"returnDate": "2026-10-13"}}) == date(2026, 10, 13)
+    assert _return_date({"details": {}}) is None and _return_date({}) is None
+    assert _return_date({"details": {"returnDate": "soon"}}) is None

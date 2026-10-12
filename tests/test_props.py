@@ -105,7 +105,7 @@ def test_project_team_raises_the_survivors_when_a_starter_is_missing():
     healthy = project_team(roster)
     short = project_team({pid: log for pid, log in roster.items() if pid != 0})
     assert short[7].mean("player_points") > healthy[7].mean("player_points") * 1.05
-    assert any("teammates out" in n for n in short[7].notes)
+    assert props.BUDGET_UP_NOTE in short[7].notes
     # Without the budget the absence is invisible to the projection.
     flat = project_team({pid: log for pid, log in roster.items() if pid != 0}, use_budget=False)
     assert flat[7].mean("player_points") == pytest.approx(healthy[7].mean("player_points"))
@@ -148,3 +148,55 @@ def test_stat_guide_brackets_the_projection_and_skips_the_bet_market():
 def test_stat_guide_has_no_over_line_for_a_stat_he_rarely_records():
     proj = project(_log(30, minutes=20, pts=6, reb=2, ast=0) + _log(2, minutes=20, pts=6, reb=2, ast=1))
     assert props.stat_guide(proj, "player_points")["ast"]["over_at"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Game context: layoffs, the schedule, blowouts, and the stat budget.
+# --------------------------------------------------------------------------- #
+def _ctx(**kw):
+    # The log's last game is 2026-02-28; by default the team last played then too.
+    base = dict(game_date=date(2026, 3, 2), team_id=1, home=True,
+                team_dates=(date(2026, 2, 26), date(2026, 2, 28)))
+    return props.Context(**{**base, **kw})
+
+
+def test_a_player_back_from_a_layoff_is_eased_in_and_harder_to_call():
+    log = _log(30)                                            # last game 2026-02-28
+    missed = (date(2026, 3, 1), date(2026, 3, 3), date(2026, 3, 5), date(2026, 3, 7))
+    assert props.layoff_adjustment(log, _ctx()) is None       # he played the team's last game
+    back = props.layoff_adjustment(log, _ctx(game_date=date(2026, 3, 9), team_dates=missed))
+    assert back.minutes_mult == back.mult("pts") == 0.92
+    assert back.spread_mult > 1 and "missing 4 games" in back.notes[0]
+    assert props.layoff_adjustment(log, _ctx(team_id=9)).minutes_mult == props._DEBUT_MULT
+
+
+def test_context_reads_the_schedule_and_the_matchup_by_role():
+    rested = props.context_adjustment(34, _ctx())
+    tired = props.context_adjustment(34, _ctx(game_date=date(2026, 3, 1)))   # played yesterday
+    assert tired.mult("reb") == pytest.approx(rested.mult("reb") * props._B2B_MULT)
+    # Home helps scoring, not rebounding.
+    away = props.context_adjustment(34, _ctx(home=False))
+    assert rested.mult("pts") > 1 > away.mult("pts") and rested.mult("reb") == 1
+    # A heavy favourite rests its starters and plays its bench; an underdog's starters stay on.
+    assert props.context_adjustment(34, _ctx(expected_margin=12)).minutes_mult < 1
+    assert props.context_adjustment(16, _ctx(expected_margin=12)).minutes_mult > 1
+    assert props.context_adjustment(34, _ctx(expected_margin=-12)).minutes_mult == 1
+
+
+def test_stat_budget_hands_missing_production_to_the_bench_first():
+    roster = {i: _log(30, minutes=m, pts=round(m / 2), reb=4, ast=3) for i, m in
+              enumerate([34, 33, 32, 30, 28, 24, 20, 18, 15])}
+    plain = project_team(roster)
+    totals = {s: sum(p.means[s] for p in plain.values()) / props._ROTATION_SHARE[s]
+              for s in props.BASE_STATS}
+    same = project_team(roster, context=_ctx(home=True, team_totals=totals))
+    more = project_team(roster, context=_ctx(home=True, team_totals={**totals, "ast": totals["ast"] * 1.2}))
+    assert same[8].means["ast"] == pytest.approx(plain[8].means["ast"], rel=0.02)
+    bench, starter = more[8].means["ast"] / same[8].means["ast"], more[0].means["ast"] / same[0].means["ast"]
+    assert bench > starter > 1                                # the team's assists come from someone
+    assert more[8].means["reb"] == pytest.approx(same[8].means["reb"])   # only the short stat moves
+
+
+def test_a_thin_log_widens_the_spread():
+    thin, deep = project(_log(8, pts=20)), project(_log(40, pts=20))
+    assert thin.phis["player_points"] > deep.phis["player_points"]

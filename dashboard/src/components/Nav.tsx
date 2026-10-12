@@ -7,6 +7,8 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Tonight", match: (p: string) => p === "/" || p.startsWith("/games") },
+  { href: "/screener", label: "Screener", match: (p: string) => p.startsWith("/screener") },
+  { href: "/fantasy", label: "Fantasy", match: (p: string) => p.startsWith("/fantasy") },
   { href: "/players", label: "Players", match: (p: string) => p.startsWith("/players") },
   { href: "/teams", label: "Teams", match: (p: string) => p.startsWith("/teams") },
   { href: "/news", label: "News", match: (p: string) => p.startsWith("/news") },
@@ -18,7 +20,8 @@ export function Nav() {
   return (
     <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-plane/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 sm:px-6">
-        <Link href="/" className="text-sm font-semibold tracking-tight text-primary">
+        <Link href="/" className="flex items-center gap-2 text-sm font-semibold tracking-tight text-primary">
+          <span className="h-2.5 w-2.5 rounded-full bg-accent" aria-hidden />
           NBA Trading Bot
         </Link>
         <nav className="flex items-center gap-1" aria-label="Sections">
@@ -30,7 +33,7 @@ export function Nav() {
                 href={l.href}
                 aria-current={active ? "page" : undefined}
                 className={`rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
-                  active ? "bg-primary text-plane" : "text-secondary hover:text-primary"
+                  active ? "bg-accent/15 text-accent" : "text-secondary hover:text-primary"
                 }`}
               >
                 {l.label}

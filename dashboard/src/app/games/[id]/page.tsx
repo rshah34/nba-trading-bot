@@ -2,23 +2,53 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useState } from "react";
 import { PickCards } from "@/components/PickList";
 import { InjuryList, ReportList } from "@/components/Reports";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, SectionTitle, StatusBadge, TeamLink } from "@/components/ui";
+import { Card, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, TeamMark } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { clock, longDate, num, pct, STAT_LABELS } from "@/lib/format";
+import { clock, longDate, num, pct, seriesLine, STAT_LABELS } from "@/lib/format";
 import { pra } from "@/lib/markets";
 import type { GameDetail, GamePlayer, GameSide, StatLine } from "@/lib/types";
 
-const COLS = ["min", "pts", "reb", "ast", "fg3m", "stl", "blk", "tov", "pra"] as const;
-// Side by side before the game there is room for fewer columns.
-const PREGAME_COLS = COLS.filter((c) => !["stl", "blk", "tov"].includes(c));
-const value = (line: StatLine | null, key: (typeof COLS)[number]) =>
-  line == null ? null : key === "pra" ? pra(line) : line[key];
+type View = "actual" | "proj";
+type Col = "min" | "pts" | "reb" | "ast" | "fg3m" | "stl" | "blk" | "tov" | "pra";
+// A played game reads like a box score; a projection adds the combined line the picks are made in.
+const BOX_COLS: Col[] = ["min", "pts", "reb", "ast", "fg3m", "stl", "blk", "tov"];
+const PROJ_COLS: Col[] = ["min", "pts", "reb", "ast", "fg3m", "pra"];
+const value = (line: StatLine | null, key: Col) => (line == null ? null : key === "pra" ? pra(line) : line[key]);
 
-/** Projected box score; once the game is played, the actual number with the projection beside it. */
-function BoxScore({ side, final }: { side: GameSide; final: boolean }) {
+/** What is moving a team's projections, each note with the players it applies to. */
+function Adjustments({ players }: { players: GamePlayer[] }) {
+  const byNote = new Map<string, string[]>();
+  for (const p of players) for (const n of p.notes) byNote.set(n, [...(byNote.get(n) ?? []), p.name]);
+  if (byNote.size === 0) return null;
+  return (
+    <div className="mt-4 border-t border-[var(--border)] pt-3">
+      <div className="mb-2 text-xs font-medium text-muted">Adjustments to these projections</div>
+      <ul className="space-y-1.5 text-xs text-secondary">
+        {[...byNote].slice(0, 6).map(([note, names]) => (
+          <li key={note} className="flex gap-2">
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden />
+            <span>
+              <span className="font-medium text-primary">
+                {names.length > 3 ? `${names.length} players` : names.join(", ")}
+              </span>
+              {": "}
+              {note.replace(/^news: /, "")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** One team's table: what each player did, or what the model projects for him. */
+function BoxScore({ side, view }: { side: GameSide; view: View }) {
+  const line = (r: GamePlayer) => (view === "actual" ? r.actual : r.proj);
+  const players = side.players.filter((r) => line(r) != null);
   const columns: Column<GamePlayer>[] = [
     {
       key: "name",
@@ -33,42 +63,36 @@ function BoxScore({ side, final }: { side: GameSide; final: boolean }) {
         </span>
       ),
     },
-    ...(final ? COLS : PREGAME_COLS).map((key): Column<GamePlayer> => ({
+    ...(view === "actual" ? BOX_COLS : PROJ_COLS).map((key): Column<GamePlayer> => ({
       key,
       header: STAT_LABELS[key],
       align: "right",
-      sort: (r) => value(final ? r.actual : r.proj, key),
-      render: (r) => {
-        const proj = value(r.proj, key);
-        if (!final) return num(proj);
-        return (
-          <>
-            <span className="text-primary">{num(value(r.actual, key), 0)}</span>
-            <span className="ml-1.5 inline-block w-9 text-left text-xs text-muted">{proj == null ? "" : num(proj)}</span>
-          </>
-        );
-      },
+      sort: (r) => value(line(r), key),
+      render: (r) => num(value(line(r), key), view === "actual" || key === "min" ? 0 : 1),
     })),
   ];
   return (
     <Card className="p-4">
       <div className="mb-2 flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-primary">
-          <TeamLink id={side.team.id} abbr={side.team.name} />
+          <TeamLink id={side.team.id} abbr={side.team.name} mark={side.team.abbr} />
         </h3>
-        <span className="text-xs text-muted">{final ? "Actual, with the projection in grey" : "Projected"}</span>
       </div>
-      <SortableTable
-        rows={side.players}
-        columns={columns}
-        rowKey={(r) => r.id}
-        initialSort={{ key: "min", dir: "desc" }}
-      />
-      {side.players.some((p) => p.notes.length > 0) && !final && (
-        <p className="mt-3 text-xs text-secondary">
-          {[...new Set(side.players.flatMap((p) => p.notes))].slice(0, 3).join(" · ")}
+      {players.length > 0 ? (
+        <SortableTable
+          key={view}
+          dense
+          rows={players}
+          columns={columns}
+          rowKey={(r) => r.id}
+          initialSort={{ key: "pts", dir: "desc" }}
+        />
+      ) : (
+        <p className="py-6 text-center text-sm text-muted">
+          {view === "actual" ? "The box score isn't in yet. It arrives with the next daily run." : "No projections for this team."}
         </p>
       )}
+      {view === "proj" && <Adjustments players={players} />}
       {side.injuries.length > 0 && (
         <div className="mt-4 border-t border-[var(--border)] pt-3">
           <div className="mb-2 text-xs font-medium text-muted">Injury report</div>
@@ -88,8 +112,10 @@ function BoxScore({ side, final }: { side: GameSide; final: boolean }) {
 export default function GamePage() {
   const { id } = useParams<{ id: string }>();
   const { data: game, error, loading } = useApi<GameDetail>(`/games/${id}`);
+  const [chosen, setChosen] = useState<View>("actual");
   if (!game) return <PageState loading={loading} error={error} />;
   const final = game.status === "final";
+  const view: View = final ? chosen : "proj";
 
   return (
     <div>
@@ -98,12 +124,16 @@ export default function GamePage() {
       </Link>
       <div className="mb-6 mt-2 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-primary">
-            {game.away.name} <span className="font-normal text-muted">at</span> {game.home.name}
+          <h1 className="flex flex-wrap items-center gap-x-2.5 text-2xl font-semibold tracking-tight text-primary">
+            <TeamMark abbr={game.away.abbr} className="h-3.5 w-3.5" />
+            {game.away.name} <span className="font-normal text-muted">at</span>
+            <TeamMark abbr={game.home.abbr} className="h-3.5 w-3.5" />
+            {game.home.name}
           </h1>
           <p className="mt-1 text-sm text-secondary">
             {final ? `Final: ${game.away.abbr} ${game.away.score}, ${game.home.abbr} ${game.home.score}` : `Tip ${clock(game.tipoff_at) || "time not set"}`}
-            {game.preseason ? " · Preseason (exhibition minutes; projections are for regular-season roles)" : ""}
+            {game.preseason ? " · Preseason" : ""}
+            {game.series ? ` · ${seriesLine(game.home.abbr, game.away.abbr, game.series)}` : ""}
           </p>
         </div>
         {(game.model_home_prob != null || game.market_home_prob != null) && (
@@ -130,29 +160,40 @@ export default function GamePage() {
       {game.reasoning && (
         <Card className="mb-8 p-4">
           <div className="text-xs font-medium text-muted">Why the model sees it this way</div>
-          <p className="mt-1.5 text-sm text-secondary">{game.reasoning}</p>
           {game.key_factors && game.key_factors.length > 0 && (
-            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-secondary">
+            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-secondary marker:text-accent">
               {game.key_factors.map((f) => (
                 <li key={f}>{f}</li>
               ))}
             </ul>
           )}
+          <details className="mt-2 text-sm text-secondary">
+            <summary className="cursor-pointer text-xs font-medium text-accent">Full reasoning</summary>
+            <p className="mt-1.5 whitespace-pre-line">{game.reasoning}</p>
+          </details>
         </Card>
       )}
 
-      <SectionTitle
-        hint={
-          final
-            ? "What each player did, next to what the model would have projected for the players who took the floor."
-            : "Each team shares one minutes budget: when rotation players are out, the rest absorb their minutes."
-        }
-      >
-        Box scores
-      </SectionTitle>
-      <div className={`grid gap-4 ${final ? "" : "lg:grid-cols-2"}`}>
-        <BoxScore side={game.away_side} final={final} />
-        <BoxScore side={game.home_side} final={final} />
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
+          <span className="h-3.5 w-1 rounded-full bg-accent" aria-hidden />
+          {view === "actual" ? "Box score" : "Projected box score"}
+        </h2>
+        {final && (
+          <Segmented
+            label="Numbers shown"
+            value={chosen}
+            onChange={setChosen}
+            options={[
+              { value: "actual", label: "What happened" },
+              { value: "proj", label: "What the model projected" },
+            ]}
+          />
+        )}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <BoxScore side={game.away_side} view={view} />
+        <BoxScore side={game.home_side} view={view} />
       </div>
     </div>
   );

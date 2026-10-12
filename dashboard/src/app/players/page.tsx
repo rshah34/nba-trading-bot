@@ -71,8 +71,7 @@ export default function PlayersPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight text-primary">Players</h1>
       <p className="mt-1 max-w-2xl text-sm text-secondary">
-        Per-game averages. Click a column to sort; switch to the last 5 or 10 games to see who is trending, then open a
-        player to test a line against his game log.
+        Per-game averages. Open a player to test a line against his game log.
       </p>
 
       <div className="my-4 flex flex-wrap items-center gap-2">

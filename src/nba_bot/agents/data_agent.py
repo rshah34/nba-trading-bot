@@ -98,8 +98,11 @@ def _last_game_date_before(session: Session, team_id: int, before: date) -> date
 
 def sync_games_for_date(session: Session, game_date: date) -> int:
     df = nba_stats.get_scoreboard(game_date)
+    nba = set(session.execute(select(Team.team_id)).scalars())
     count = 0
     for _, g in df.iterrows():
+        if int(g["home_team_id"]) not in nba or int(g["away_team_id"]) not in nba:
+            continue   # a preseason exhibition against a club from outside the league
         home_last = _last_game_date_before(session, int(g["home_team_id"]), game_date)
         away_last = _last_game_date_before(session, int(g["away_team_id"]), game_date)
         home_rest = (game_date - home_last).days - 1 if home_last else None
@@ -207,6 +210,7 @@ def sync_injuries(session: Session) -> int:
                     player_name=inj["player_name"],
                     status=inj["status"] or "unknown",
                     reason=inj["reason"],
+                    return_date=inj["return_date"],
                 )
             )
             count += 1
@@ -353,7 +357,8 @@ def sync_odds(session: Session, markets: tuple[str, ...] | None = None) -> dict:
     """
     if markets is None:
         markets = tuple(m.strip() for m in settings.game_markets.split(",") if m.strip())
-    events, quota = odds_api.fetch_nba_odds(settings.odds_api_key, markets)
+    events, quota = odds_api.fetch_nba_odds(
+        settings.odds_api_key, markets, settings.odds_bookmakers)
     index = _build_game_index(session)
 
     inserted, unmatched, live = 0, 0, 0

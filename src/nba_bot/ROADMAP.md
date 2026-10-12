@@ -9,7 +9,7 @@ It never places a bet.
 | Run | Command | Does |
 |-----|---------|------|
 | daily (14:30 PT) | `daily` | final scores + box scores → settle yesterday's bets (win/loss, CLV) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **pick the day's 2–3 best bets and text them** |
-| close (15:30, 18:30 PT) | `daily-close` | re-capture prices near tip — the closing lines the bets are graded against |
+| close (15:30, 18:30 PT) | `daily-close` | re-read the injury report and **text an update if it undercuts a pick**; re-capture prices near tip — the closing lines the bets are graded against |
 
 Scheduling, texts and API budgets: [scripts/SCHEDULING.md](../../scripts/SCHEDULING.md).
 
@@ -23,14 +23,22 @@ absent players — tested no better (0.249 and 0.246) and were removed. Kept run
 because it is cheap (~$0.01 a game) and the live news/injury signal can't be backtested.
 
 **Props model** (`features/props.py`) — plain statistics, no LLM: minutes × per-minute
-rate × opponent × a team minutes budget, as a full distribution per stat. Backtested
-free on all of 2025-26 (`props-backtest`):
+rate × opponent × team minutes and stat budgets × game context, as a full distribution
+per stat. Backtested free on 2024-25 and 2025-26 (`props-backtest`):
 
-- beats trailing-10 and season averages in all 12 markets, unbiased, calibrated to ~1–2 pts;
-- **who plays is the biggest lever** — pooled error 2.740 with no availability
-  knowledge, 2.703 with the true rotation, and 2.747 with *yesterday's* rotation
-  (stale availability is worse than none). Hence props are priced late, on fresh news;
-- rejected: per-player with/without splits for an absent teammate (worse than nothing).
+- beats trailing-10 and season averages in every market but blocks (level with the season average there), unbiased, calibrated to ~1–2 pts;
+- **who plays is the biggest lever** — pooled error on 2025-26 is 2.750 with no
+  availability knowledge, 2.705 with the true rotation, and 2.757 with *yesterday's*
+  rotation (stale availability is worse than none). Hence props are priced late, on
+  fresh news, and re-checked near tip;
+- added October 2026, fit on 2024-25 and confirmed on 2025-26 (2.721 → 2.705 with the
+  rotation known; points+rebounds+assists 6.264 → 6.216). In order of size: a **stat
+  budget** (a team's points, rebounds and assists get redistributed when the players
+  who supply them are out), **layoffs** (a returning player is eased in), likely
+  **blowouts**, **back-to-backs**, and home court (real but nearly invisible);
+- rejected: per-player with/without splits for an absent teammate (worse than
+  nothing), and widening the spread whenever minutes look uncertain (not needed once
+  the means were fixed; it is widened only for a short log, a layoff or a debut).
 
 The backtest measures projection quality, not profit: there are no free historical prop
 lines. Whether it beats a sportsbook can only be shown live.
@@ -50,6 +58,18 @@ lines. Whether it beats a sportsbook can only be shown live.
 At most three bets a day, across game winners and props, ranked by edge — the
 probability the bot would size on minus the market's. When both kinds qualify the best
 of each is in. Only the picks are recorded, so the paper record is what was texted.
+
+**Your books.** Nine books are fetched for the price of one region and all of them set
+the market's fair probability, but a bet is only made at a book in `MY_BOOKS`
+(DraftKings, Hard Rock, Kalshi), at the best of their prices. When your
+book hangs a different line from the rest, the others' probabilities are carried to
+its line with the model's own distribution, so a line that is a point off shows up as
+the edge it is. Each pick stores the worst price (and line) still worth taking.
+
+**Late-scratch guard** (`picks.recheck`, in the close runs). A prop is re-projected
+on the newest injury report and texted as a PASS if the player is out or in doubt, or
+if the bet is no longer worth the price taken. A game pick gets a HEADS UP when a
+24-minute player on the backed side is newly out or one returns for the opponent.
 Each prop pick carries single-stat guidance — the points, rebounds and assists lines
 at which the model alone would take the over or the under — graded afterwards in
 `props-record`.
@@ -73,18 +93,22 @@ questionable rotation player is priced both ways and only bets that survive both
 ## The dashboard (`dashboard/`, API in `api/`)
 
 A read-only site for exploring everything the bot knows: tonight's slate with projected
-box scores, every player's game log with a prop explorer (set any line, see hit rates
-and the model's probability), team matchup tables, the consolidated news, and the picks
-with their record. See [dashboard/README.md](../../dashboard/README.md).
+box scores, a slate screener, fantasy projections, every player's
+game log with a prop explorer (set any line, see hit rates and the model's
+probability), team matchup tables, the consolidated news, and the picks with their
+record. See [dashboard/README.md](../../dashboard/README.md).
 
 ## Not built
 
-- A "returning player" adjustment beyond what the news signals carry.
 - Per-market calibration of prop probabilities — needs a few weeks of live lines first.
+- Choosing the prop market by evidence. Points+rebounds+assists is the one market the
+  free plan buys; the single-stat guidance sent with each pick is graded, which is
+  the read on whether points, rebounds or assists alone would do better.
 
 ## Known limits
 
 - The pipeline has to run on a Mac on a home connection: NBA's data endpoints refuse
   cloud servers, and the texts go through Messages.
-- Opening-week rotations come from preseason appearances and are unreliable.
+- Until a team has played a game that counts, its roster comes from preseason
+  appearances (camp invitees included), so the minutes and stat budgets stay off.
 - Backtests of the game model can't see injuries, news or odds, which exist only live.

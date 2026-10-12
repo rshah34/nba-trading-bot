@@ -9,10 +9,11 @@ What this can and can't tell you:
   free. The "line" used here is the player's own trailing-10 average, which is a far
   softer opponent than a real book. Real edge is only visible live, through CLV.
 
-The minutes-budget feature needs to know who is available, which no historical
+The minutes and stat budgets need to know who is available, which no historical
 injury report can tell us. `availability` brackets it:
 
-* `none`      — no availability knowledge at all (the floor).
+* `none`      — no availability knowledge at all (the floor). Schedule, venue and
+                layoff effects still apply; they don't depend on tonight's rotation.
 * `last_game` — assume the rotation that played the team's previous game. Knowable
                 before tip; what a pipeline with a stale injury report achieves.
 * `oracle`    — the rotation that actually played tonight. Mildly look-ahead, so a
@@ -33,8 +34,10 @@ from nba_bot.features.props import (
     GameLine,
     Params,
     PropsData,
+    game_context,
     over_under_probs,
     project_team,
+    team_form,
 )
 
 _BINS = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.45), (0.45, 0.5), (0.5, 0.55), (0.55, 0.6),
@@ -109,12 +112,14 @@ def run_backtest(
     stats: dict[str, MarketStats] = {m: MarketStats() for m in MARKETS}
 
     factors: dict[int, dict[str, float]] = {}
+    form: dict = {}
     factors_date: date | None = None
     for game in games:
         if start and game.game_date < start:
             continue
         if game.game_date != factors_date:
             factors = data.opponent_factors(game.game_date, season, params) if use_opponent else {}
+            form = team_form(data, game.game_date, season)
             factors_date = game.game_date
 
         for team_id, opp_id in ((game.home_id, game.away_id), (game.away_id, game.home_id)):
@@ -130,6 +135,8 @@ def run_backtest(
                 } or None
             projections = project_team(
                 logs, opp_factors=factors.get(opp_id), params=params,
+                context=game_context(form, team_id, opp_id, team_id == game.home_id,
+                                     game.game_date, factors.get(opp_id)),
                 use_budget=availability != "none", budget_from=budget_from,
             )
             for pid, idx in tonight:

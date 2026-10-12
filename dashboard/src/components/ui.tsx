@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { TEAM_COLORS } from "@/lib/teams";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
@@ -10,8 +11,11 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 export function SectionTitle({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
   return (
     <div className="mb-3">
-      <h2 className="text-sm font-semibold text-primary">{children}</h2>
-      {hint && <p className="mt-0.5 max-w-3xl text-xs text-secondary">{hint}</p>}
+      <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
+        <span className="h-3.5 w-1 rounded-full bg-accent" aria-hidden />
+        {children}
+      </h2>
+      {hint && <p className="mt-0.5 max-w-3xl pl-3 text-xs text-muted">{hint}</p>}
     </div>
   );
 }
@@ -37,7 +41,7 @@ export function Segmented<T extends string>({
           aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
           className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-            o.value === value ? "bg-primary text-plane" : "text-secondary hover:text-primary"
+            o.value === value ? "bg-accent/15 text-accent" : "text-secondary hover:text-primary"
           }`}
         >
           {o.label}
@@ -74,33 +78,76 @@ export function Select({
   );
 }
 
-/** Team abbreviation as a link to the team page. */
-export function TeamLink({ id, abbr, className = "" }: { id: number | null; abbr: string | null; className?: string }) {
+/** A team's colour as a small chip. Decoration beside the name, never the only cue. */
+export function TeamMark({ abbr, className = "" }: { abbr: string | null | undefined; className?: string }) {
+  const color = abbr ? TEAM_COLORS[abbr] : undefined;
+  if (!color) return null;
+  return (
+    <span
+      aria-hidden
+      className={`inline-block h-2.5 w-2.5 shrink-0 rounded-[3px] ring-1 ring-[var(--border)] ${className}`}
+      style={{ background: color }}
+    />
+  );
+}
+
+/** Team abbreviation, with its colour, as a link to the team page. `mark` names the
+ * team whose colour to show when the label isn't the abbreviation. */
+export function TeamLink({ id, abbr, mark, className = "" }: { id: number | null; abbr: string | null; mark?: string | null; className?: string }) {
   if (!abbr) return <span className="text-muted">—</span>;
-  if (id == null) return <span className={className}>{abbr}</span>;
+  const label = (
+    <span className="inline-flex items-center gap-1.5">
+      <TeamMark abbr={mark ?? abbr} />
+      {abbr}
+    </span>
+  );
+  if (id == null) return <span className={className}>{label}</span>;
   return (
     <Link href={`/teams/${id}`} className={`hover:underline ${className}`}>
-      {abbr}
+      {label}
     </Link>
   );
 }
 
-const STATUS_TONE: Record<string, string> = {
-  out: "bg-critical",
-  doubtful: "bg-critical",
-  questionable: "bg-warning",
-  "day-to-day": "bg-warning",
-  gtd: "bg-warning",
+const TONES = {
+  critical: { dot: "bg-critical", pill: "border-critical/40 bg-critical/10" },
+  warning: { dot: "bg-warning", pill: "border-warning/50 bg-warning/15" },
+  good: { dot: "bg-good", pill: "border-good/40 bg-good/10" },
+  neutral: { dot: "bg-series-1", pill: "border-series-1/40 bg-series-1/10" },
+};
+const STATUS_TONE: Record<string, keyof typeof TONES> = {
+  out: "critical",
+  doubtful: "critical",
+  "smaller role": "critical",
+  questionable: "warning",
+  "day-to-day": "warning",
+  gtd: "warning",
+  "minutes limit": "warning",
+  returning: "good",
+  "bigger role": "good",
+  note: "neutral",
 };
 
-/** Availability status: a colored dot plus the word, never color alone. */
+/** Availability or role status: a tinted pill with a dot and the word, never colour alone. */
 export function StatusBadge({ status }: { status: string | null | undefined }) {
   if (!status) return null;
-  const tone = STATUS_TONE[status.toLowerCase()] ?? "bg-warning";
+  const tone = TONES[STATUS_TONE[status.toLowerCase()] ?? "warning"];
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[var(--border)] px-1.5 py-0.5 text-[11px] font-medium text-secondary">
-      <span className={`inline-block h-1.5 w-1.5 rounded-full ${tone}`} aria-hidden />
+    <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[11px] font-medium text-primary ${tone.pill}`}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${tone.dot}`} aria-hidden />
       {status}
+    </span>
+  );
+}
+
+/** A number with a thin bar under it, scaled to the largest value in its column. */
+export function BarCell({ value, max, digits = 1 }: { value: number; max: number; digits?: number }) {
+  return (
+    <span className="inline-block min-w-16 text-right">
+      <span className="font-medium text-primary">{value.toFixed(digits)}</span>
+      <span className="mt-0.5 block h-1 rounded-full bg-[var(--gridline)]">
+        <span className="block h-full rounded-full bg-series-1" style={{ width: `${Math.max(0, Math.min(1, value / (max || 1))) * 100}%` }} />
+      </span>
     </span>
   );
 }
@@ -135,5 +182,18 @@ export function Tile({ label, value, hint }: { label: string; value: ReactNode; 
       <div className="mt-1 text-2xl font-semibold text-primary">{value}</div>
       {hint && <div className="mt-1 text-xs text-secondary">{hint}</div>}
     </Card>
+  );
+}
+
+/** A signed change, green or red once it is big enough to matter, grey otherwise. */
+export function Delta({ value, threshold, digits = 1, suffix = "" }: { value: number | null; threshold: number; digits?: number; suffix?: string }) {
+  if (value == null) return <span className="text-muted">—</span>;
+  const tone = value >= threshold ? "text-good" : value <= -threshold ? "text-critical" : "text-muted";
+  return (
+    <span className={tone}>
+      {value > 0 ? "+" : ""}
+      {value.toFixed(digits)}
+      {suffix}
+    </span>
   );
 }

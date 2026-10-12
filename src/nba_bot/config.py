@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     # Game-line markets per snapshot (one credit each). The moneyline alone is what
     # bets and CLV use; spreads/totals only add reporting.
     game_markets: str = "h2h,spreads,totals"
+    # Books whose prices are bought; together they are the market consensus. Up to
+    # ten cost the same credits as one region.
+    odds_bookmakers: str = (
+        "draftkings,hardrockbet,kalshi,fanduel,betmgm,betrivers,espnbet,bovada,betonlineag"
+    )
+    # The books you can actually bet at. Picks are only made at one of their prices.
+    my_books: str = "draftkings,hardrockbet,kalshi"
     # Day of the month the Odds API quota refills — used to pace spending.
     odds_quota_reset_day: int = 1
 
@@ -60,3 +67,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def my_books() -> frozenset[str]:
+    return frozenset(b.strip() for b in settings.my_books.split(",") if b.strip())

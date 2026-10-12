@@ -1,15 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
 import { CalibrationChart } from "@/components/CalibrationChart";
-import { ModelSelector } from "@/components/ModelSelector";
 import { ResultBadge } from "@/components/PickList";
 import { SortableTable, type Column } from "@/components/SortableTable";
 import { Card, Empty, PageState, SectionTitle, Tile } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { american, num, pct, shortDate, signed } from "@/lib/format";
-import type { BacktestReport, ModelInfo, Pick, PicksPayload } from "@/lib/types";
+import type { BacktestReport, Pick, PicksPayload } from "@/lib/types";
 
 const columns: Column<Pick>[] = [
   { key: "date", header: "Date", sort: (p) => p.date, render: (p) => shortDate(p.date) },
@@ -36,26 +34,22 @@ const columns: Column<Pick>[] = [
   { key: "clv", header: "CLV", align: "right", title: "Closing-line value, in probability points", sort: (p) => p.clv, render: (p) => (p.clv == null ? "" : signed(p.clv * 100)) },
 ];
 
-/** The game model's backtest: how its win probabilities held up on finished games. */
+/** How the game model in use has done on the games it has predicted live. */
 function GameModelAccuracy() {
-  const { data: models } = useApi<ModelInfo[]>("/models");
-  const [choice, setChoice] = useState("");
-  const selected = choice || models?.[0]?.model_version || "";
-  const { data: report, loading } = useApi<BacktestReport>(
-    selected ? `/backtest?model_version=${encodeURIComponent(selected)}` : null,
-  );
-  if (!models || models.length === 0) return null;
+  const { data: report } = useApi<BacktestReport>("/game-model");
+  if (!report) return null;
 
   return (
     <section className="mt-10">
-      <SectionTitle hint="The game-winner model replayed over finished games, blind to the betting line. Each version is a separate test run.">
+      <SectionTitle hint="The live game-winner model, graded on the games it predicted before tip.">
         Game model accuracy
       </SectionTitle>
-      <div className="mb-4">
-        <ModelSelector models={models} value={selected} onChange={setChoice} />
-      </div>
-      {report && report.n > 0 && (
-        <div className={loading ? "opacity-60" : ""}>
+      {report.n === 0 ? (
+        <Card className="border-dashed px-4 py-3 text-sm text-secondary">
+          Nothing graded yet. The first regular-season games are scored the day after they are played.
+        </Card>
+      ) : (
+        <>
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Tile label="Games scored" value={report.n} />
             <Tile label="Winner accuracy" value={pct(report.winner_accuracy, 1)} hint="picked the eventual winner" />
@@ -65,12 +59,11 @@ function GameModelAccuracy() {
           <Card className="p-5">
             <h3 className="text-sm font-medium text-primary">Calibration</h3>
             <p className="mb-4 mt-0.5 text-xs text-secondary">
-              When the model says 70%, does the home team win about 70% of the time? Points on the dashed line are
-              perfectly calibrated.
+              When the model says 70%, does the home team win about 70% of the time?
             </p>
             <CalibrationChart bins={report.calibration} />
           </Card>
-        </div>
+        </>
       )}
     </section>
   );
@@ -86,8 +79,7 @@ export default function PicksPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight text-primary">Picks</h1>
       <p className="mt-1 max-w-2xl text-sm text-secondary">
-        Every pick the bot has recorded and how it finished. These are paper bets. Judge them by closing-line value —
-        whether the price beat the one on offer at tip-off — before win-loss, which is mostly luck over a short run.
+        Every paper bet and how it finished. Closing-line value says more than win-loss over a short run.
       </p>
 
       {picks.length === 0 ? (

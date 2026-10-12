@@ -300,7 +300,7 @@ export default function PlayerPage() {
           </div>
 
           <section className="mb-8">
-            <SectionTitle hint={`Pick a market, set a line, and see how often he cleared it in ${season} and what the model gives it for his next game.`}>
+            <SectionTitle hint="Pick a stat and set a line.">
               Prop explorer
             </SectionTitle>
             <PropExplorer key={`${player.id}-${season}`} player={player} season={season} />

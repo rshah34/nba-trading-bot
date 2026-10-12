@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { InjuryList, ReportList } from "@/components/Reports";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, SectionTitle, StatusBadge, Tile } from "@/components/ui";
+import { Card, PageState, SectionTitle, StatusBadge, TeamMark, Tile } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { num, shortDate, signed, STAT_LABELS } from "@/lib/format";
 import { pra } from "@/lib/markets";
@@ -52,7 +52,10 @@ export default function TeamPage() {
         ← Teams
       </Link>
       <div className="mb-6 mt-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-primary">{team.name}</h1>
+        <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight text-primary">
+          <TeamMark abbr={team.abbr} className="h-3.5 w-3.5" />
+          {team.name}
+        </h1>
         <p className="mt-1 text-sm text-secondary">
           {team.conference ?? ""}
           {team.next && (

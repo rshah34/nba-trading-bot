@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from nba_bot import betting
 from nba_bot.agents import analysis_agent, data_agent, news_agent
-from nba_bot.config import settings
+from nba_bot.config import my_books, settings
 from nba_bot.data import odds_api
 from nba_bot.data.nba_stats import is_preseason
 from nba_bot.data.team_lookup import resolve_team_id
@@ -32,16 +32,22 @@ from nba_bot.db.models import (
     Team,
 )
 from nba_bot.features.props import (
+    BUDGET_UP_NOTE,
     GUIDE_PROB,
     MARKETS,
+    ROTATION_MIN,
     Adjustment,
+    GameLine,
     Projection,
     PropsData,
+    TeamForm,
+    game_context,
     load_props_data,
     normalize_name,
     over_under_probs,
     project_team,
     stat_guide,
+    team_form,
 )
 
 log = logging.getLogger("nba_bot.props")
@@ -164,7 +170,8 @@ def sync_prop_odds(
             out["stopped_for_quota"] = True
             break
 
-        raw, quota = odds_api.fetch_event_props(settings.odds_api_key, event["id"], wanted)
+        raw, quota = odds_api.fetch_event_props(
+            settings.odds_api_key, event["id"], wanted, settings.odds_bookmakers)
         out["quota"] = quota
         out["events"] += 1
         for offer in odds_api.parse_event_props(raw):
@@ -185,26 +192,69 @@ def sync_prop_odds(
 # Live projections.
 # --------------------------------------------------------------------------- #
 @dataclass
+class Slate:
+    """What every team's projections for one date share."""
+
+    game_date: date
+    as_of: datetime
+    factors: dict[int, dict[str, float]]    # team -> what it allows vs. the league
+    form: dict[int, TeamForm]
+    signals: dict[int, list]                # player -> live news signals
+
+
+def slate_for(session: Session, data: PropsData, game_date: date, as_of: datetime) -> Slate:
+    season = data_agent._season_for_date(game_date)
+    return Slate(game_date, as_of, data.opponent_factors(game_date, season),
+                 team_form(data, game_date, season), news_agent.active_signals(session, as_of))
+
+
+@dataclass
 class TeamView:
     """One team's projections under both readings of its uncertain players."""
 
     projections: dict[int, Projection]      # uncertain players assumed to play
     alt: dict[int, Projection] | None       # ...assumed to sit (None = no swing player)
     blocked: dict[int, str]                 # player -> why we won't bet him
+    out: list[int]                          # ruled out, biggest role first
+
+
+def _name_absences(projections: dict[int, Projection], names: list[str]) -> None:
+    """Say who is out in the "teammates out" note."""
+    if not names:
+        return
+    who = BUDGET_UP_NOTE.replace("teammates", " and ".join(names))
+    for proj in projections.values():
+        proj.notes = [who if n == BUDGET_UP_NOTE else n for n in proj.notes]
 
 
 def team_view(
-    session: Session, data: PropsData, team_id: int, opp_factors: dict[str, float] | None,
-    game_date: date, as_of: datetime, signals: dict[int, list],
+    session: Session, data: PropsData, slate: Slate, team_id: int, opp_id: int, home: bool,
 ) -> TeamView:
-    roster = [
-        pid for pid, team in data.current_team.items()
-        if team == team_id and data.last_seen[pid] >= game_date - _ROSTER_WINDOW
-    ]
+    game_date = slate.game_date
+    window = game_date - _ROSTER_WINDOW
+    # Once the team has played this season, its roster is who has suited up in games
+    # that count. Before that, preseason is the only read on who is on the team — and
+    # it is full of camp invitees, so the budgets below wait for a real game.
+    form = slate.form.get(team_id)
+    settled = form is not None and bool(form.dates)
+
+    def recent(pid: int) -> bool:
+        if not settled:
+            return data.last_seen[pid] >= window
+        log = data.log_before(pid, game_date)
+        return bool(log) and log[-1].team_id == team_id and log[-1].game_date >= window
+
+    roster = {pid for pid, team in data.current_team.items() if team == team_id and recent(pid)}
+    # Someone on the injury report in the last few days is on his way back (or still
+    # out, which the next block handles), however long ago he last played.
+    for name in analysis_agent.recently_listed(session, team_id, slate.as_of):
+        pid = _resolve_player(data, name, {team_id})
+        if pid is not None and data.current_team.get(pid) == team_id:
+            roster.add(pid)
 
     out_ids: set[int] = set()
     blocked: dict[int, str] = {}
-    for inj in analysis_agent.current_injuries(session, team_id, as_of):
+    for inj in analysis_agent.current_injuries(session, team_id, slate.as_of, game_date):
         pid = _resolve_player(data, inj["player"], {team_id})
         if pid is None:
             continue
@@ -216,7 +266,7 @@ def team_view(
 
     extra: dict[int, Adjustment] = {}
     for pid in roster:
-        view = news_agent.player_view(signals.get(pid, []))
+        view = news_agent.player_view(slate.signals.get(pid, []))
         if view.out:
             out_ids.add(pid)
         elif view.uncertain:
@@ -224,23 +274,35 @@ def team_view(
         if view.adjustment is not None:
             extra[pid] = view.adjustment
 
-    active = [pid for pid in roster if pid not in out_ids]
-    logs = {pid: data.log_before(pid, game_date) for pid in active}
-    projections = project_team(logs, opp_factors=opp_factors, extra=extra,
-                               fallback_minutes=data.exhibition_minutes)
+    def recent_minutes(pid: int) -> float:
+        recent: list[GameLine] = data.log_before(pid, game_date)[-5:]
+        return sum(g.minutes for g in recent) / len(recent) if recent else 0.0
 
+    out = sorted((pid for pid in out_ids if pid in roster), key=recent_minutes, reverse=True)
+    # Only a player who was in the rotation lately is the reason minutes are going
+    # spare tonight; someone out for months has long since been absorbed.
+    missing = [data.names[pid] for pid in out
+               if recent_minutes(pid) >= ROTATION_MIN and data.last_seen[pid] >= window][:2]
+
+    factors = slate.factors.get(opp_id)
+    context = game_context(slate.form, team_id, opp_id, home, game_date, factors)
+    logs = {pid: data.log_before(pid, game_date) for pid in roster if pid not in out_ids}
+
+    def project(source: dict[int, list[GameLine]]) -> dict[int, Projection]:
+        projections = project_team(source, opp_factors=factors, extra=extra, context=context,
+                                   use_budget=settled, fallback_minutes=data.exhibition_minutes)
+        _name_absences(projections, missing)
+        return projections
+
+    projections = project(logs)
     # Who else plays swings everyone's minutes, and a wrong guess is worse than no
     # guess (backtest: stale availability loses to no availability). So when a real
     # rotation player is a coin flip, price the team both ways and only bet what
     # holds up under each.
     swing = {pid for pid in blocked
              if pid in projections and projections[pid].minutes >= _SWING_MINUTES}
-    alt = None
-    if swing:
-        alt = project_team({p: lg for p, lg in logs.items() if p not in swing},
-                           opp_factors=opp_factors, extra=extra,
-                           fallback_minutes=data.exhibition_minutes)
-    return TeamView(projections, alt, blocked)
+    alt = project({p: lg for p, lg in logs.items() if p not in swing}) if swing else None
+    return TeamView(projections, alt, blocked, out)
 
 
 def latest_quotes(session: Session, game_id: str) -> dict[tuple[int, str], list[betting.PropQuote]]:
@@ -300,6 +362,8 @@ def price_props(
 
     `log_lines` also stores every line it priced (bet or not) so the model can be
     scored against the market later.
+    Bets are only made at the books in `MY_BOOKS`; every book quoted still counts
+    toward the consensus.
     `min_team_games`: no bet on a player until he has that many games this season
     for his current team. Opening-week projections rest on last season's role, often
     on another team; the lines are still priced and logged, just not bet.
@@ -307,9 +371,9 @@ def price_props(
     data = data or load_props_data(session)
     as_of = as_of or datetime.now(timezone.utc)
     season = data_agent._season_for_date(game_date)
-    factors = data.opponent_factors(game_date, season)
-    signals = news_agent.active_signals(session, as_of)
+    slate = slate_for(session, data, game_date, as_of)
     names = {t.team_id: t.abbreviation for t in session.execute(select(Team)).scalars()}
+    decide_kwargs.setdefault("books", my_books())
 
     games = session.execute(
         select(Game).where(Game.game_date == game_date, Game.status == "scheduled")
@@ -325,7 +389,7 @@ def price_props(
         if not quotes:
             continue
         views = {
-            team: team_view(session, data, team, factors.get(opp), game_date, as_of, signals)
+            team: team_view(session, data, slate, team, opp, team == game.home_team_id)
             for team, opp in ((game.home_team_id, game.away_team_id),
                               (game.away_team_id, game.home_team_id))
         }
@@ -378,7 +442,8 @@ def price_props(
                 "player_id": pid, "player_name": data.names[pid], "team_id": team,
                 "team": names.get(team, "?"), "market": market, "decision": d,
                 "proj_mean": proj.mean(market), "proj_phi": proj.phis[market],
-                "proj_minutes": proj.minutes, "notes": notes,
+                "proj_minutes": proj.minutes,
+                "reason": _reason(proj.mean(market), d, market, data.log_before(pid, game_date), notes),
                 "stat_guide": stat_guide(proj, market),
             }
             best = per_player.get(pid)
@@ -394,6 +459,17 @@ def price_props(
     if log_lines:
         session.commit()
     return candidates
+
+
+def _reason(mean: float, d: betting.PropDecision, market: str, log: list[GameLine],
+            notes: list[str]) -> str:
+    """The one line sent with a pick: the projection against the line, how the bet
+    would have done lately, and whatever is moving the projection tonight."""
+    last = log[-10:]
+    hits = sum(g.value(market) > d.line if d.side == "over" else g.value(market) < d.line
+               for g in last)
+    return "; ".join([f"projects {mean:.1f} against a line of {d.line:g}",
+                      f"{d.side} in {hits} of his last {len(last)}", *notes])
 
 
 def record_prop_bets(session: Session, chosen: list[dict], as_of: datetime) -> int:
@@ -412,7 +488,8 @@ def record_prop_bets(session: Session, chosen: list[dict], as_of: datetime) -> i
                 market_prob=d.market_prob, edge=d.edge, ev=d.expected_value,
                 stake_fraction=d.stake_fraction, proj_mean=round(c["proj_mean"], 3),
                 proj_phi=round(c["proj_phi"], 3), proj_minutes=c["proj_minutes"],
-                notes="; ".join(c["notes"]) or None, stat_guide=c["stat_guide"],
+                notes=c["reason"], stat_guide=c["stat_guide"],
+                playable_odds=d.playable_odds, playable_line=d.playable_line,
             )
             .on_conflict_do_nothing(constraint="prop_bets_game_player_model_key")
             .returning(PropBet.id)

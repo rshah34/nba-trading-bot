@@ -1,8 +1,9 @@
 """Client for The Odds API v4 (https://the-odds-api.com/).
 
-Free tier is 500 requests/month; the odds endpoint costs 1 request per region
-per market group, so we fetch h2h+spreads+totals for the `us` region in one call.
-The `/sports` endpoint (used only to check season status) is free.
+Free tier is 500 credits/month. The odds endpoint costs one credit per market per
+region, and a named list of up to ten bookmakers is billed as one region — which
+is how the books we want (some in `us`, some in `us2`, the exchanges in `us_ex`)
+come back for the price of one.
 
 `parse_event` is deliberately network-free so odds parsing can be unit-tested
 against a recorded payload without spending quota.
@@ -49,7 +50,7 @@ class OddsEvent:
 def fetch_nba_odds(
     api_key: str,
     markets: tuple[str, ...],
-    regions: str = "us",
+    bookmakers: str,
     odds_format: str = "american",
 ) -> tuple[list[dict], dict[str, str | None]]:
     """Fetch current NBA odds. Returns (raw_events, quota_headers).
@@ -61,7 +62,7 @@ def fetch_nba_odds(
         f"{ODDS_API_BASE}/sports/{SPORT_KEY}/odds",
         params={
             "apiKey": api_key,
-            "regions": regions,
+            "bookmakers": bookmakers,
             "markets": ",".join(markets),
             "oddsFormat": odds_format,
             "dateFormat": "iso",
@@ -124,8 +125,8 @@ def parse_event(event: dict) -> OddsEvent:
 
 # --------------------------------------------------------------------------- #
 # Player props. Not in the bulk feed — one request per event, and each request
-# costs (markets returned × regions) credits. A full 12-market slate is ~12 credits
-# a game, so props need a paid plan; the free tier's 500/month lasts about 4 nights.
+# costs one credit per market returned. A full 12-market slate is ~12 credits a
+# game, so the free tier's 500/month covers one market a night.
 # --------------------------------------------------------------------------- #
 @dataclass
 class PropOffer:
@@ -161,14 +162,14 @@ def fetch_events(api_key: str) -> tuple[list[dict], dict[str, str | None]]:
 
 @_retry
 def fetch_event_props(
-    api_key: str, event_id: str, markets: tuple[str, ...], regions: str = "us"
+    api_key: str, event_id: str, markets: tuple[str, ...], bookmakers: str
 ) -> tuple[dict, dict[str, str | None]]:
     """Player-prop odds for one event. Returns (raw_event, quota_headers)."""
     resp = httpx.get(
         f"{ODDS_API_BASE}/sports/{SPORT_KEY}/events/{event_id}/odds",
         params={
             "apiKey": api_key,
-            "regions": regions,
+            "bookmakers": bookmakers,
             "markets": ",".join(markets),
             "oddsFormat": "american",
             "dateFormat": "iso",

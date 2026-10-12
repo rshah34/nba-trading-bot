@@ -10,7 +10,8 @@ runs make up the day:
           Late on purpose: props are won on knowing who plays, which firms up
           through the day, and the recorded price is the one on offer when the
           text goes out.
-* close — near tip: re-capture game lines and the prop markets we hold, which
+* close — near tip: re-read the injury report and text an update if it undercuts
+          a pick, then re-capture game lines and the prop markets we hold, which
           become the closing prices CLV is measured against.
 """
 
@@ -64,13 +65,17 @@ def append_run_log(phase: str, result: dict, log_dir: str | Path = "logs") -> di
     return entry
 
 
-def _step(name: str, fn) -> dict:
+def _step(session: Session, name: str, fn) -> dict:
     try:
         result = fn()
         log.info("%s ✓ %s", name, result)
         return {"ok": True, "result": result}
     except Exception as exc:  # noqa: BLE001 — isolate steps so one failure doesn't abort the run
         log.exception("%s FAILED", name)
+        if session is not None:
+            # A failed statement leaves the transaction aborted; without this every
+            # later step would fail on the same session.
+            session.rollback()
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -89,15 +94,15 @@ def run_daily(session: Session, on: date | None = None) -> dict:
     steps = {
         # Finals and box scores for the games since the last run, tonight's schedule,
         # and the current injury report.
-        "ingest": _step("ingest", lambda: data_agent.run_nightly(session)),
+        "ingest": _step(session, "ingest", lambda: data_agent.run_nightly(session)),
         # The rest of the season's fixtures: the league adds and moves games as it goes.
-        "schedule": _step("schedule", lambda: data_agent.sync_schedule(session)),
-        "mark_closing": _step("mark-closing", lambda: data_agent.mark_closing_lines(session)),
-        "evaluate": _step("evaluate", lambda: evaluation_agent.run_evaluation(session)),
+        "schedule": _step(session, "schedule", lambda: data_agent.sync_schedule(session)),
+        "mark_closing": _step(session, "mark-closing", lambda: data_agent.mark_closing_lines(session)),
+        "evaluate": _step(session, "evaluate", lambda: evaluation_agent.run_evaluation(session)),
         # Settle paper bets: CLV vs. the closing line + P&L on the outcome.
-        "settle_bets": _step("settle-bets", lambda: betting_agent.settle_bets(session)),
-        "settle_props": _step("settle-props", lambda: props_agent.settle_prop_bets(session)),
-        "news": _step("news", lambda: news_agent.sync_news(session)),
+        "settle_bets": _step(session, "settle-bets", lambda: betting_agent.settle_bets(session)),
+        "settle_props": _step(session, "settle-props", lambda: props_agent.settle_prop_bets(session)),
+        "news": _step(session, "news", lambda: news_agent.sync_news(session)),
     }
     teams = _slate_teams(session, on)
     if not teams:
@@ -113,15 +118,15 @@ def run_daily(session: Session, on: date | None = None) -> dict:
 
     steps |= {
         "signals": _step(
-            "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams)),
+            session, "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams)),
         "predict": _step(
-            "predict", lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)]),
+            session, "predict", lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)]),
         # Prices last, so they are as fresh as they can be when the picks are made.
-        "odds": _step("ingest-odds", lambda: data_agent.sync_odds(session)),
-        "prop_odds": _step("prop-odds", lambda: props_agent.sync_prop_odds(session, data=data)),
-        "picks": _step("picks", choose),
+        "odds": _step(session, "ingest-odds", lambda: data_agent.sync_odds(session)),
+        "prop_odds": _step(session, "prop-odds", lambda: props_agent.sync_prop_odds(session, data=data)),
+        "picks": _step(session, "picks", choose),
         "notify": _step(
-            "notify", lambda: {"text": notify.send(digest.best_bets(session, on))}),
+            session, "notify", lambda: {"text": notify.send(digest.best_bets(session, on))}),
     }
     return steps
 
@@ -140,13 +145,22 @@ _CLOSE_WINDOW_HOURS = 3.25
 
 
 def run_close(session: Session, on: date | None = None) -> dict:
-    """Near tip: the snapshots that become the closing prices. Cheap — game lines
-    are one request, and props re-price only the markets we hold bets in."""
+    """Near tip: the late-scratch check, then the snapshots that become the closing
+    prices. Cheap — the injury report is free, game lines are one request, and props
+    re-price only the markets we hold bets in."""
     on = on or date.today()
+
+    def recheck() -> dict:
+        updates = picks.recheck(session, on)
+        sent = notify.send(digest.pick_update(on, updates), kind="update") if updates else None
+        return {"updates": updates, "text": sent}
+
     return {
-        "odds": _step("ingest-odds", lambda: _game_odds(session, on)),
+        "injuries": _step(session, "injuries", lambda: data_agent.sync_injuries(session)),
+        "recheck": _step(session, "recheck", recheck),
+        "odds": _step(session, "ingest-odds", lambda: _game_odds(session, on)),
         "prop_odds": _step(
-            "prop-odds", lambda: props_agent.sync_prop_odds(
+            session, "prop-odds", lambda: props_agent.sync_prop_odds(
                 session, only_open_bets=True, window_hours=_CLOSE_WINDOW_HOURS)
         ),
     }

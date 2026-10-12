@@ -2,7 +2,10 @@
 
 export type StatKey = "pts" | "reb" | "ast" | "fg3m" | "stl" | "blk" | "tov";
 export type StatLine = Record<StatKey, number> & { min: number };
-export type Averages = StatLine & { gp: number };
+/** Shot counts, carried for fantasy scoring. */
+export type ShotKey = "fgm" | "fga" | "ftm" | "fta";
+export type FullLine = StatLine & Record<ShotKey, number>;
+export type Averages = FullLine & { gp: number };
 
 export interface TeamRef {
   id: number;
@@ -40,8 +43,15 @@ export interface Pick {
   clv: number | null;
   result: "won" | "lost" | "push" | "void" | null;
   actual: number | null;
+  /** The one-line reason sent with the pick. */
   notes: string | null;
   guide: Record<string, { proj: number; over_at: number | null; under_at: number | null; actual?: number }> | null;
+  /** The worst price, and for a prop the worst line, at which this is still a bet. */
+  line: number | null;
+  playable_odds: number | null;
+  playable_line: number | null;
+  /** Set when late injury news undercut the pick. */
+  flag: string | null;
 }
 
 export interface GameCard {
@@ -50,6 +60,9 @@ export interface GameCard {
   status: string;
   preseason: boolean;
   tipoff_at: string | null;
+  /** Playoff games only: each side's wins in the series through this game. */
+  series: { home: number; away: number } | null;
+  /** `record` is the team's record in this kind of game (preseason or regular season). */
   home: TeamRef & { score: number | null; record: string | null };
   away: TeamRef & { score: number | null; record: string | null };
   model_home_prob: number | null;
@@ -66,6 +79,46 @@ export interface Slate {
   picks: Pick[];
 }
 
+export interface SlateSide extends TeamRef {
+  /** What the opponent allows in each stat against the league; 1 is average. Empty early in a season. */
+  matchup: Partial<Record<StatKey, number>>;
+}
+
+export interface SlateLine {
+  line: number;
+  books: number;
+  market_over: number;
+  model_over: number | null;
+  /** Times he went over this line in his last `games`. */
+  hits: number;
+  games: number;
+}
+
+export interface SlatePlayer {
+  id: number;
+  name: string;
+  team: string;
+  team_id: number;
+  opp: string;
+  home: boolean;
+  game_id: string;
+  /** Why he is in doubt, when he is. */
+  status: string | null;
+  notes: string[];
+  proj: FullLine;
+  season: Averages | null;
+  l5: Averages | null;
+  lines: Record<string, SlateLine>;
+}
+
+export interface SlatePlayers {
+  date: string | null;
+  /** Upcoming dates with games, soonest first. */
+  dates: string[];
+  games: { game_id: string; tipoff_at: string | null; preseason: boolean; away: SlateSide; home: SlateSide }[];
+  players: SlatePlayer[];
+}
+
 export interface GamePlayer {
   id: number;
   name: string;
@@ -77,8 +130,11 @@ export interface GamePlayer {
 
 export interface Injury {
   player: string;
+  /** As it applies to the game in question: "Out" once he is ruled out of it. */
   status: string;
   detail: string | null;
+  /** Not expected back for weeks. */
+  long_term: boolean;
 }
 
 export interface GameSide {
@@ -214,12 +270,6 @@ export interface PicksPayload {
     avg_clv: number | null;
     clv_positive_rate: number | null;
   };
-}
-
-export interface ModelInfo {
-  model_version: string;
-  n_predictions: number;
-  latest_as_of: string | null;
 }
 
 export interface CalibrationBin {

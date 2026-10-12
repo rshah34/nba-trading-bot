@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { american, pct, signed } from "@/lib/format";
+import { american, bookName, pct, signed } from "@/lib/format";
 import type { Pick } from "@/lib/types";
 import { Card } from "./ui";
 
@@ -48,8 +48,16 @@ export function PickCards({ picks }: { picks: Pick[] }) {
             </Link>
             {" · "}
             {american(p.odds)}
-            {p.book ? ` at ${p.book}` : " (average price)"}
+            {p.book ? ` at ${bookName(p.book)}` : ""}
           </div>
+          {p.flag && (
+            <p className="mt-2 flex gap-1.5 rounded-lg border border-[var(--border)] px-2 py-1.5 text-xs text-primary">
+              <span className="mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning" aria-hidden />
+              <span>
+                <span className="font-medium">Late update:</span> {p.flag}.
+              </span>
+            </p>
+          )}
           <dl className="tnum mt-3 grid grid-cols-4 gap-2 border-t border-[var(--border)] pt-3 text-xs">
             {[
               ["Model", pct(p.model)],
@@ -63,7 +71,24 @@ export function PickCards({ picks }: { picks: Pick[] }) {
               </div>
             ))}
           </dl>
-          {p.notes && <p className="mt-2 text-xs text-secondary">{p.notes}</p>}
+          {p.notes && (
+            <p className="mt-2 text-xs text-secondary">
+              <span className="text-muted">Why: </span>
+              {p.notes}
+            </p>
+          )}
+          {p.playable_odds != null && (
+            <p className="tnum mt-2 text-xs text-secondary">
+              <span className="text-muted">Playable to </span>
+              {american(p.playable_odds)}
+              {p.playable_line != null && p.playable_line !== p.line && (
+                <>
+                  <span className="text-muted">, or to a line of </span>
+                  {p.playable_line}
+                </>
+              )}
+            </p>
+          )}
           {p.guide && (
             <p className="tnum mt-2 text-xs text-secondary">
               <span className="text-muted">Single stats, over at or below / under at or above: </span>
