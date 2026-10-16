@@ -59,7 +59,10 @@ function LogTooltip({
  * One bar per game, oldest to newest, against a betting line. Games over the line
  * are highlighted and the rest recede, so the hit rate reads at a glance.
  */
-export function GameLogChart({ points, line, unit }: { points: LogPoint[]; line: number; unit: string }) {
+export function GameLogChart({ points, line, unit, lineSource }: { points: LogPoint[]; line: number; unit: string; lineSource: string }) {
+  // Opponent names fit under a recent stretch of games; across a whole season they
+  // would only be every few games, so they're left to the tooltip.
+  const labelled = points.length <= 20;
   const peak = Math.max(line, ...points.map((p) => p.value), 1) * 1.08;
   const stepSize = peak <= 6 ? 1 : peak <= 12 ? 2 : peak <= 30 ? 5 : 10;
   const top = Math.ceil(peak / stepSize) * stepSize;
@@ -69,15 +72,15 @@ export function GameLogChart({ points, line, unit }: { points: LogPoint[]; line:
       <div className="mb-2 flex flex-wrap items-center gap-4 text-xs text-secondary">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2.5 w-2.5 rounded-sm bg-series-1" aria-hidden />
-          Over the line
+          Over {line}
         </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2.5 w-2.5 rounded-sm bg-series-rest" aria-hidden />
-          Under
+          Under {line}
         </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-0.5 w-4 bg-primary" aria-hidden />
-          Line {line}
+          {lineSource}
         </span>
       </div>
       <div className="h-64 w-full">
@@ -87,10 +90,11 @@ export function GameLogChart({ points, line, unit }: { points: LogPoint[]; line:
             <XAxis
               dataKey="key"
               tickFormatter={(key: string) => points.find((p) => p.key === key)?.opp ?? ""}
-              tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+              tick={labelled ? { fill: "var(--text-muted)", fontSize: 11 } : false}
+              height={labelled ? 30 : 4}
               stroke="var(--baseline)"
               tickLine={false}
-              interval={points.length > 24 ? "preserveStartEnd" : 0}
+              interval={0}
             />
             <YAxis
               domain={[0, top]}

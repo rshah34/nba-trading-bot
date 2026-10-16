@@ -11,7 +11,8 @@ import { pra } from "@/lib/markets";
 import type { StatKey, TeamDetail } from "@/lib/types";
 
 type RosterRow = TeamDetail["roster"][number];
-const STATS: StatKey[] = ["pts", "reb", "ast", "fg3m"];
+// The same columns as a game's box score, so the two read alike.
+const STATS: (StatKey | "min")[] = ["min", "pts", "reb", "ast", "fg3m"];
 
 export default function TeamPage() {
   const { id } = useParams<{ id: string }>();
@@ -28,13 +29,10 @@ export default function TeamPage() {
           <Link href={`/players/${r.id}`} className="font-medium text-primary hover:underline">
             {r.name}
           </Link>
-          <StatusBadge status={r.status} />
+          {r.status && <StatusBadge status={r.status} />}
         </span>
       ),
     },
-    { key: "gp", header: "GP", align: "right", sort: (r) => r.season?.gp, render: (r) => r.season?.gp ?? "—" },
-    { key: "min", header: "MIN", align: "right", sort: (r) => r.season?.min, render: (r) => num(r.season?.min) },
-    { key: "l5min", header: "L5 MIN", align: "right", title: "Minutes over his last 5 games", sort: (r) => r.l5?.min, render: (r) => num(r.l5?.min) },
     ...STATS.map((s): Column<RosterRow> => ({
       key: s,
       header: STAT_LABELS[s],
@@ -71,20 +69,20 @@ export default function TeamPage() {
 
       {team.gp > 0 && (
         <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Tile label={`Record · ${team.season}`} value={`${team.w}-${team.l}`} />
+          <Tile label="Record" value={`${team.w}-${team.l}`} />
           <Tile label="Average margin" value={signed(team.margin)} />
-          <Tile label="Points scored" value={num(team.pf)} hint="per game" />
-          <Tile label="Points allowed" value={num(team.pa)} hint="per game" />
+          <Tile label="Points scored per game" value={num(team.pf)} />
+          <Tile label="Points allowed per game" value={num(team.pa)} />
         </div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <section>
-          <SectionTitle hint={carried ? "Averages are from each player's most recent season, which may have been with another team." : undefined}>
+          <SectionTitle hint={carried ? "Per game in each player's most recent season, which may have been with another team." : `Per game, ${team.season}.`}>
             Roster
           </SectionTitle>
           <Card className="p-2">
-            <SortableTable rows={team.roster} columns={columns} rowKey={(r) => r.id} initialSort={{ key: "min", dir: "desc" }} />
+            <SortableTable dense rows={team.roster} columns={columns} rowKey={(r) => r.id} initialSort={{ key: "pts", dir: "desc" }} />
           </Card>
         </section>
 

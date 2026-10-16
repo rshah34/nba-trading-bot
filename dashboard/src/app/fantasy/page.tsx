@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { SlateHeader, useSlatePlayers } from "@/components/SlateControls";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { BarCell, Card, Delta, Empty, PageState, Segmented, Select, StatusBadge, TeamLink } from "@/components/ui";
+import { Card, Delta, doubtLabel, Empty, PageState, Segmented, Select, StatusBadge, TeamLink } from "@/components/ui";
 import { fantasyPoints, SCORING } from "@/lib/fantasy";
 import { num, STAT_LABELS } from "@/lib/format";
 import type { SlatePlayer, StatKey } from "@/lib/types";
@@ -38,7 +38,6 @@ export default function FantasyPage() {
 
   if (!data) return <PageState loading={loading} error={error} />;
   const teams = [...new Set(data.players.map((p) => p.team))].sort();
-  const top = Math.max(...rows.map((r) => r.fp), 0);
 
   const columns: Column<Row>[] = [
     {
@@ -52,7 +51,7 @@ export default function FantasyPage() {
           </Link>
           {r.status && (
             <span title={r.status}>
-              <StatusBadge status="Questionable" />
+              <StatusBadge status={doubtLabel(r.status)} />
             </span>
           )}
         </span>
@@ -61,7 +60,7 @@ export default function FantasyPage() {
     { key: "team", header: "Team", sort: (r) => r.team, render: (r) => <span onClick={(e) => e.stopPropagation()}><TeamLink id={r.team_id} abbr={r.team} /></span> },
     { key: "opp", header: "Opp", sort: (r) => r.opp, render: (r) => `${r.home ? "vs" : "@"} ${r.opp}` },
     { key: "min", header: "MIN", align: "right", sort: (r) => r.proj.min, render: (r) => num(r.proj.min, 0) },
-    { key: "fp", header: "Proj FP", align: "right", title: "Projected fantasy points tonight", sort: (r) => r.fp, render: (r) => <BarCell value={r.fp} max={top} /> },
+    { key: "fp", header: "Proj FP", align: "right", title: "Projected fantasy points tonight", sort: (r) => r.fp, render: (r) => <span className="font-semibold text-primary">{num(r.fp)}</span> },
     { key: "avg", header: "Season FP", align: "right", sort: (r) => r.average, render: (r) => num(r.average) },
     { key: "change", header: "vs season", align: "right", title: "Tonight's projection minus his season average", sort: (r) => (r.average == null ? null : r.fp - r.average), render: (r) => <Delta value={r.average == null ? null : r.fp - r.average} threshold={2} /> },
     { key: "recent", header: "Last 5 FP", align: "right", sort: (r) => r.recent, render: (r) => num(r.recent) },
@@ -83,7 +82,6 @@ export default function FantasyPage() {
           options={Object.entries(SCORING).map(([value, s]) => ({ value, label: s.label }))}
         />
         <Select label="Team" value={team} onChange={setTeam} options={[{ value: "", label: "All teams" }, ...teams.map((t) => ({ value: t, label: t }))]} />
-        <span className="ml-auto text-xs text-muted">{SCORING[site].note}</span>
       </div>
 
       {rows.length === 0 ? (

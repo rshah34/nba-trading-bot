@@ -140,17 +140,10 @@ export function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
-/** A number with a thin bar under it, scaled to the largest value in its column. */
-export function BarCell({ value, max, digits = 1 }: { value: number; max: number; digits?: number }) {
-  return (
-    <span className="inline-block min-w-16 text-right">
-      <span className="font-medium text-primary">{value.toFixed(digits)}</span>
-      <span className="mt-0.5 block h-1 rounded-full bg-[var(--gridline)]">
-        <span className="block h-full rounded-full bg-series-1" style={{ width: `${Math.max(0, Math.min(1, value / (max || 1))) * 100}%` }} />
-      </span>
-    </span>
-  );
-}
+/** The status word for a player in doubt: the injury report's own ("Day-To-Day",
+ * "Doubtful") when that is the reason, otherwise "Questionable". */
+export const doubtLabel = (reason: string) =>
+  reason.startsWith("listed ") ? reason.slice("listed ".length) : "Questionable";
 
 /** Loading and error states shared by every page. */
 export function PageState({ loading, error }: { loading: boolean; error: string | null }) {

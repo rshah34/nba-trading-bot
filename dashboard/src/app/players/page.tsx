@@ -70,9 +70,6 @@ export default function PlayersPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight text-primary">Players</h1>
-      <p className="mt-1 max-w-2xl text-sm text-secondary">
-        Per-game averages. Open a player to test a line against his game log.
-      </p>
 
       <div className="my-4 flex flex-wrap items-center gap-2">
         <input

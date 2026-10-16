@@ -7,7 +7,7 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Tonight", match: (p: string) => p === "/" || p.startsWith("/games") },
-  { href: "/screener", label: "Screener", match: (p: string) => p.startsWith("/screener") },
+  { href: "/projections", label: "Projections", match: (p: string) => p.startsWith("/projections") },
   { href: "/fantasy", label: "Fantasy", match: (p: string) => p.startsWith("/fantasy") },
   { href: "/players", label: "Players", match: (p: string) => p.startsWith("/players") },
   { href: "/teams", label: "Teams", match: (p: string) => p.startsWith("/teams") },

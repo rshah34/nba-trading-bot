@@ -6,13 +6,13 @@ import { useState } from "react";
 import { PickCards } from "@/components/PickList";
 import { InjuryList, ReportList } from "@/components/Reports";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, TeamMark } from "@/components/ui";
+import { Card, doubtLabel, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, TeamMark } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { clock, longDate, num, pct, seriesLine, STAT_LABELS } from "@/lib/format";
 import { pra } from "@/lib/markets";
 import type { GameDetail, GamePlayer, GameSide, StatLine } from "@/lib/types";
 
-type View = "actual" | "proj";
+type View = "actual" | "avg" | "proj";
 type Col = "min" | "pts" | "reb" | "ast" | "fg3m" | "stl" | "blk" | "tov" | "pra";
 // A played game reads like a box score; a projection adds the combined line the picks are made in.
 const BOX_COLS: Col[] = ["min", "pts", "reb", "ast", "fg3m", "stl", "blk", "tov"];
@@ -47,7 +47,7 @@ function Adjustments({ players }: { players: GamePlayer[] }) {
 
 /** One team's table: what each player did, or what the model projects for him. */
 function BoxScore({ side, view }: { side: GameSide; view: View }) {
-  const line = (r: GamePlayer) => (view === "actual" ? r.actual : r.proj);
+  const line = (r: GamePlayer) => (view === "actual" ? r.actual : view === "avg" ? r.avg : r.proj);
   const players = side.players.filter((r) => line(r) != null);
   const columns: Column<GamePlayer>[] = [
     {
@@ -59,7 +59,9 @@ function BoxScore({ side, view }: { side: GameSide; view: View }) {
           <Link href={`/players/${r.id}`} className="font-medium text-primary hover:underline">
             {r.name}
           </Link>
-          <StatusBadge status={r.status ? "Questionable" : null} />
+          <span title={r.status ?? undefined}>
+            <StatusBadge status={r.status ? doubtLabel(r.status) : null} />
+          </span>
         </span>
       ),
     },
@@ -68,7 +70,7 @@ function BoxScore({ side, view }: { side: GameSide; view: View }) {
       header: STAT_LABELS[key],
       align: "right",
       sort: (r) => value(line(r), key),
-      render: (r) => num(value(line(r), key), view === "actual" || key === "min" ? 0 : 1),
+      render: (r) => num(value(line(r), key), view === "actual" || (view === "proj" && key === "min") ? 0 : 1),
     })),
   ];
   return (
@@ -89,7 +91,7 @@ function BoxScore({ side, view }: { side: GameSide; view: View }) {
         />
       ) : (
         <p className="py-6 text-center text-sm text-muted">
-          {view === "actual" ? "The box score isn't in yet. It arrives with the next daily run." : "No projections for this team."}
+          {view === "actual" ? "The box score isn't in yet. It arrives with the next daily run." : "No players to show for this team yet."}
         </p>
       )}
       {view === "proj" && <Adjustments players={players} />}
@@ -112,10 +114,13 @@ function BoxScore({ side, view }: { side: GameSide; view: View }) {
 export default function GamePage() {
   const { id } = useParams<{ id: string }>();
   const { data: game, error, loading } = useApi<GameDetail>(`/games/${id}`);
-  const [chosen, setChosen] = useState<View>("actual");
+  const [chosen, setChosen] = useState<View | null>(null);
   if (!game) return <PageState loading={loading} error={error} />;
   const final = game.status === "final";
-  const view: View = final ? chosen : "proj";
+  const view: View = chosen ?? (final ? "actual" : "avg");
+  // Whose averages these are: the season most of the listed players last played in.
+  const seasons = [...game.away_side.players, ...game.home_side.players].map((p) => p.avg_season).filter(Boolean);
+  const avgSeason = seasons.sort((a, b) => seasons.filter((s) => s === b).length - seasons.filter((s) => s === a).length)[0];
 
   return (
     <div>
@@ -175,21 +180,28 @@ export default function GamePage() {
       )}
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
-          <span className="h-3.5 w-1 rounded-full bg-accent" aria-hidden />
-          {view === "actual" ? "Box score" : "Projected box score"}
-        </h2>
-        {final && (
-          <Segmented
-            label="Numbers shown"
-            value={chosen}
-            onChange={setChosen}
-            options={[
-              { value: "actual", label: "What happened" },
-              { value: "proj", label: "What the model projected" },
-            ]}
-          />
-        )}
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-primary">
+            <span className="h-3.5 w-1 rounded-full bg-accent" aria-hidden />
+            {view === "actual" ? "Box score" : view === "avg" ? "Season averages" : "Projected box score"}
+          </h2>
+          {view !== "actual" && (
+            <p className="mt-0.5 pl-3 text-xs text-muted">
+              {view === "avg"
+                ? `Per game${avgSeason ? ` in ${avgSeason}` : ""}, for everyone expected to play. PRA is points + rebounds + assists.`
+                : "The model's expected line for this game. PRA is points + rebounds + assists."}
+            </p>
+          )}
+        </div>
+        <Segmented
+          label="Numbers shown"
+          value={view}
+          onChange={setChosen}
+          options={[
+            final ? { value: "actual", label: "What happened" } : { value: "avg", label: "Season averages" },
+            { value: "proj", label: final ? "What the model projected" : "Model projection" },
+          ]}
+        />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <BoxScore side={game.away_side} view={view} />

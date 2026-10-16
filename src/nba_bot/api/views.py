@@ -60,7 +60,7 @@ def props_data(session: Session) -> PropsData:
 
 def team_map(session: Session) -> dict[int, dict]:
     return {t.team_id: {"id": t.team_id, "abbr": t.abbreviation, "name": t.full_name,
-                        "conference": t.conference}
+                        "conference": t.conference, "division": t.division}
             for t in session.execute(select(Team)).scalars()}
 
 
@@ -160,11 +160,30 @@ _LONG_TERM = timedelta(days=21)
 def _injury_rows(session: Session, team_id: int, now: datetime, game_date: date) -> list[dict]:
     """A team's injury report as it applies to one game: who is out of it, who is in
     doubt, and who is gone for the long haul."""
+    data = props_data(session)
     return [
-        {"player": i["player"], "status": i["status"], "detail": i["reason"],
+        {"player": i["player"], "player_id": props_agent._resolve_player(data, i["player"], {team_id}),
+         "status": i["status"], "detail": i["reason"],
          "long_term": i["return_date"] is not None and i["return_date"] - game_date > _LONG_TERM}
         for i in analysis_agent.current_injuries(session, team_id, now, game_date)
     ]
+
+
+# How fast a report fades from the top of a news list: half as prominent every two
+# days. Display only — what the models read is ranked on how firmly it is sourced.
+_NEWS_HALF_LIFE_DAYS = 2.0
+
+
+def _newest_and_firmest(reports: list[news_agent.Report], now: datetime,
+                        limit: int | None = None) -> list[news_agent.Report]:
+    """News in reading order: how firm and widely reported it is, discounted by age,
+    so this morning's solid report outranks last week's and a rumour stays below both."""
+    def score(r: news_agent.Report) -> float:
+        published = r.signal.published_at or r.signal.created_at
+        age = max((now - published).total_seconds() / 86400, 0.0) if published else 0.0
+        return r.weight * 0.5 ** (age / _NEWS_HALF_LIFE_DAYS)
+
+    return sorted(reports, key=score, reverse=True)[:limit]
 
 
 def _report(r: news_agent.Report, teams: dict[int, dict]) -> dict:
@@ -210,7 +229,8 @@ def player_detail(session: Session, player_id: int) -> dict | None:
     nxt = _next_game(session, team_id, today) if team_id is not None else None
     slate = props_agent.slate_for(session, data, nxt.game_date if nxt else today, now)
     out["reports"] = [_report(r, teams)
-                      for r in news_agent.consolidate(slate.signals.get(player_id, []))]
+                      for r in _newest_and_firmest(
+                          news_agent.consolidate(slate.signals.get(player_id, [])), now)]
     if team_id is None:
         return out
 
@@ -378,7 +398,7 @@ def slate(session: Session, on: date | None) -> dict:
 
 def slate_players(session: Session, on: date | None) -> dict:
     """Every projected player on one upcoming date: who is playing, for how long,
-    and what he is projected for. One payload feeds the screener and fantasy pages."""
+    and what he is projected for. One payload feeds the projections and fantasy pages."""
     data, teams = props_data(session), team_map(session)
     now, today = datetime.now(timezone.utc), date.today()
     upcoming = Game.status == "scheduled", Game.game_date >= today
@@ -435,6 +455,7 @@ def slate_players(session: Session, on: date | None) -> dict:
                              **{s: round(proj.means[s], 2) for s in STATS},
                              **{s: round(v, 2) for s, v in shots.items()}},
                     "season": averages([g for g in log if g.season == log[-1].season]),
+                    "season_label": log[-1].season if log else None,
                     "l5": averages(log, 5), "lines": lines,
                 })
         out["games"].append({"game_id": game.game_id, "tipoff_at": _iso(game.tipoff_at),
@@ -444,8 +465,14 @@ def slate_players(session: Session, on: date | None) -> dict:
 
 
 def _player_row(pid: int, name: str, proj: Projection | None, status: str | None,
-                actual: PlayerGameStats | None) -> dict:
-    row = {"id": pid, "name": name, "status": status, "proj": None, "actual": None, "notes": []}
+                actual: PlayerGameStats | None, log: list[GameLine] | None = None) -> dict:
+    """One player in a game: the model's line, what he did, and — before the game —
+    his per-game averages from his most recent season with games."""
+    row = {"id": pid, "name": name, "status": status, "proj": None, "actual": None,
+           "avg": None, "avg_season": None, "notes": []}
+    if log:
+        season = log[-1].season
+        row["avg"], row["avg_season"] = averages([g for g in log if g.season == season]), season
     if proj is not None:
         row["proj"] = {"min": proj.minutes, **{s: round(proj.means[s], 1) for s in STATS}}
         row["notes"] = proj.notes
@@ -490,11 +517,13 @@ def game_detail(session: Session, game_id: str) -> dict | None:
         else:
             view = props_agent.team_view(session, data, slate, team_id, opp_id,
                                          team_id == game.home_team_id)
-            rows = [_player_row(pid, data.names[pid], p, view.blocked.get(pid), None)
+            rows = [_player_row(pid, data.names[pid], p, view.blocked.get(pid), None,
+                                data.log_before(pid, game.game_date))
                     for pid, p in view.projections.items() if p.minutes >= 5]
             rows.sort(key=lambda r: r["proj"]["min"], reverse=True)
             out = _injury_rows(session, team_id, now, game.game_date)
-            reports = [_report(r, teams) for r in news_agent.team_news(session, [team_id], now)]
+            reports = [_report(r, teams) for r in _newest_and_firmest(
+                news_agent.team_news(session, [team_id], now, limit=200), now, 8)]
         sides.append({"team": teams[team_id], "players": rows, "injuries": out, "reports": reports})
 
     card = _game_card(session, game, teams, {})
@@ -565,9 +594,12 @@ def team_detail(session: Session, team_id: int) -> dict | None:
     nxt = _next_game(session, team_id, today)
     injuries = _injury_rows(session, team_id, now, nxt.game_date if nxt else today)
     listed = {normalize_name(i["player"]): i["status"] for i in injuries}
+    # A player out since last season hasn't appeared lately, but he's still on the team.
+    hurt = {i["player_id"] for i in injuries if i["player_id"] is not None}
     roster = []
     for pid, team in data.current_team.items():
-        if team != team_id or data.last_seen[pid] < newest - timedelta(days=_ROSTER_DAYS):
+        if team != team_id or (data.last_seen[pid] < newest - timedelta(days=_ROSTER_DAYS)
+                               and pid not in hurt):
             continue
         log = data.logs.get(pid, [])
         recent_season = log[-1].season if log else season
@@ -598,7 +630,8 @@ def team_detail(session: Session, team_id: int) -> dict | None:
                          "opp": teams[nxt.away_team_id if nxt.home_team_id == team_id
                                       else nxt.home_team_id]["abbr"]},
         "injuries": injuries,
-        "reports": [_report(r, teams) for r in news_agent.team_news(session, [team_id], now, 12)],
+        "reports": [_report(r, teams) for r in _newest_and_firmest(
+            news_agent.team_news(session, [team_id], now, limit=200), now, 12)],
     }
 
 
@@ -608,8 +641,9 @@ def team_detail(session: Session, team_id: int) -> dict | None:
 def news(session: Session, team_id: int | None) -> list[dict]:
     teams = team_map(session)
     ids = [team_id] if team_id else list(teams)
-    reports = news_agent.team_news(session, ids, datetime.now(timezone.utc), limit=200)
-    return [_report(r, teams) for r in reports]
+    now = datetime.now(timezone.utc)
+    reports = news_agent.team_news(session, ids, now, limit=200)
+    return [_report(r, teams) for r in _newest_and_firmest(reports, now)]
 
 
 def picks(session: Session) -> dict:

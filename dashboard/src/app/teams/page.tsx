@@ -4,95 +4,252 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, PageState, Segmented, Select, TeamMark } from "@/components/ui";
+import {
+  Card,
+  PageState,
+  SectionTitle,
+  Segmented,
+  Select,
+  TeamMark,
+} from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { num, signed, STAT_LABELS } from "@/lib/format";
 import type { StatKey, TeamRow, TeamsIndex } from "@/lib/types";
 
-type View = "allowed" | "for";
+type Stats = "for" | "allowed";
+type Grouping = "league" | "conference" | "division";
 const STATS: StatKey[] = ["pts", "reb", "ast", "fg3m", "stl", "blk", "tov"];
+// Seeds 1-6 go straight to the playoffs; 7-10 play in for the last two spots.
+const PLAYOFFS = 6;
+const PLAY_IN = 10;
+
+interface Standing extends TeamRow {
+  pct: number;
+  /** Games behind the leader of the group it's shown in. */
+  gb: number;
+  /** Place in its conference, which is what decides the playoffs. */
+  seed: number;
+}
+
+/** Best record first; point margin breaks a tie (the league's real tiebreakers need head-to-head results). */
+const byRecord = (a: TeamRow, b: TeamRow) =>
+  b.w / b.gp - a.w / a.gp || b.margin - a.margin;
+
+function Seed({
+  seed,
+  conference,
+}: {
+  seed: number;
+  conference: string | null;
+}) {
+  const tone =
+    seed <= PLAYOFFS ? "bg-good" : seed <= PLAY_IN ? "bg-warning" : "";
+  const label =
+    seed <= PLAYOFFS
+      ? "Playoff spot"
+      : seed <= PLAY_IN
+        ? "Play-in spot"
+        : "Out of the playoff picture";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5"
+      title={`${label} in the ${conference ?? ""}`}
+    >
+      <span
+        className={`inline-block h-1.5 w-1.5 rounded-full ${tone}`}
+        aria-hidden
+      />
+      {seed}
+    </span>
+  );
+}
 
 export default function TeamsPage() {
   const router = useRouter();
   const [season, setSeason] = useState("");
-  const { data, error, loading } = useApi<TeamsIndex>(season ? `/teams?season=${season}` : "/teams");
-  const [view, setView] = useState<View>("allowed");
+  const { data, error, loading } = useApi<TeamsIndex>(
+    season ? `/teams?season=${season}` : "/teams",
+  );
+  const [stats, setStats] = useState<Stats>("for");
+  const [grouping, setGrouping] = useState<Grouping>("conference");
 
-  // Shade each stat column from its lowest to its highest value, so the softest
-  // (or most productive) teams stand out without reading 30 numbers.
-  const shade = useMemo(() => {
-    const ranges = Object.fromEntries(
-      STATS.map((s) => {
-        const vals = (data?.teams ?? []).map((t) => t[view][s]);
-        return [s, [Math.min(...vals), Math.max(...vals)] as const];
-      }),
-    );
-    return (s: StatKey, v: number) => {
-      const [lo, hi] = ranges[s];
-      const t = hi > lo ? (v - lo) / (hi - lo) : 0;
-      return `color-mix(in srgb, var(--series-1) ${Math.round(t * 38)}%, transparent)`;
-    };
-  }, [data, view]);
+  const groups = useMemo(() => {
+    const teams = data?.teams ?? [];
+    const seeds = new Map<number, number>();
+    for (const conf of new Set(teams.map((t) => t.conference))) {
+      teams
+        .filter((t) => t.conference === conf)
+        .sort(byRecord)
+        .forEach((t, i) => seeds.set(t.id, i + 1));
+    }
+    const key = (t: TeamRow) =>
+      (grouping === "league"
+        ? "League"
+        : grouping === "conference"
+          ? t.conference
+          : t.division) ?? "";
+    const names = [...new Set(teams.map(key))].sort();
+    return names.map((name) => {
+      const rows = teams.filter((t) => key(t) === name).sort(byRecord);
+      const lead = rows[0];
+      return {
+        name,
+        rows: rows.map((t): Standing => ({
+          ...t,
+          pct: t.w / t.gp,
+          gb: lead ? (lead.w - t.w + (t.l - lead.l)) / 2 : 0,
+          seed: seeds.get(t.id) ?? 0,
+        })),
+      };
+    });
+  }, [data, grouping]);
 
   if (!data) return <PageState loading={loading} error={error} />;
 
-  const columns: Column<TeamRow>[] = [
+  // Seeds only mean something next to the rest of the conference.
+  const seeded = grouping === "conference";
+  const seedColumn: Column<Standing> = {
+    key: "seed",
+    header: "Seed",
+    title: "Place in its conference: 1-6 make the playoffs, 7-10 the play-in",
+    sort: (t) => t.seed,
+    render: (t) => <Seed seed={t.seed} conference={t.conference} />,
+  };
+  const columns: Column<Standing>[] = [
+    ...(seeded ? [seedColumn] : []),
     {
       key: "name",
       header: "Team",
       sort: (t) => t.name,
       render: (t) => (
-        <Link href={`/teams/${t.id}`} className="inline-flex items-center gap-2 font-medium text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+        <Link
+          href={`/teams/${t.id}`}
+          className="inline-flex items-center gap-2 font-medium text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
           <TeamMark abbr={t.abbr} />
           {t.name}
         </Link>
       ),
     },
-    { key: "record", header: "W-L", align: "right", sort: (t) => t.w / t.gp, render: (t) => `${t.w}-${t.l}` },
-    { key: "margin", header: "Margin", align: "right", title: "Average point margin", sort: (t) => t.margin, render: (t) => signed(t.margin) },
-    ...STATS.map((s): Column<TeamRow> => ({
+    {
+      key: "w",
+      header: "W",
+      align: "right",
+      sort: (t) => t.w,
+      render: (t) => t.w,
+    },
+    {
+      key: "l",
+      header: "L",
+      align: "right",
+      sort: (t) => t.l,
+      render: (t) => t.l,
+    },
+    {
+      key: "pct",
+      header: "Pct",
+      align: "right",
+      sort: (t) => t.pct,
+      render: (t) => t.pct.toFixed(3).replace(/^0/, ""),
+    },
+    {
+      key: "gb",
+      header: "GB",
+      align: "right",
+      title: "Games behind the leader",
+      sort: (t) => t.gb,
+      render: (t) => (t.gb === 0 ? "—" : t.gb.toFixed(1)),
+    },
+    {
+      key: "margin",
+      header: "Margin",
+      align: "right",
+      title: "Average point margin",
+      sort: (t) => t.margin,
+      render: (t) => signed(t.margin),
+    },
+    ...STATS.map((s): Column<Standing> => ({
       key: s,
       header: STAT_LABELS[s],
       align: "right",
-      sort: (t) => t[view][s],
-      render: (t) => (
-        <span className="-my-1 inline-block min-w-12 rounded px-1.5 py-1 text-primary" style={{ background: shade(s, t[view][s]) }}>
-          {num(t[view][s])}
-        </span>
-      ),
+      sort: (t) => t[stats][s],
+      render: (t) => num(t[stats][s]),
     })),
   ];
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight text-primary">Teams</h1>
-      <p className="mt-1 max-w-2xl text-sm text-secondary">
-        Per game, {data.season}. Darker cells are higher; &ldquo;allowed&rdquo; is what opponents put up against a team.
-      </p>
+      <h1 className="text-2xl font-semibold tracking-tight text-primary">
+        Teams
+      </h1>
       <div className="my-4 flex flex-wrap items-center gap-2">
         <Segmented
-          label="Stats shown"
-          value={view}
-          onChange={setView}
+          label="Standings by"
+          value={grouping}
+          onChange={setGrouping}
           options={[
-            { value: "allowed", label: "Allowed to opponents" },
+            { value: "league", label: "League" },
+            { value: "conference", label: "Conference" },
+            { value: "division", label: "Division" },
+          ]}
+        />
+        <Segmented
+          label="Stats shown"
+          value={stats}
+          onChange={setStats}
+          options={[
             { value: "for", label: "Team's own" },
+            { value: "allowed", label: "Allowed to opponents" },
           ]}
         />
         {data.seasons.length > 1 && (
-          <Select label="Season" value={data.season} onChange={setSeason} options={data.seasons.map((s) => ({ value: s, label: s }))} />
+          <Select
+            label="Season"
+            value={data.season}
+            onChange={setSeason}
+            options={data.seasons.map((s) => ({ value: s, label: s }))}
+          />
+        )}
+        {seeded && (
+          <span className="ml-auto flex items-center gap-3 text-xs text-secondary">
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-good" aria-hidden />
+              Playoffs
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-warning"
+                aria-hidden
+              />
+              Play-in
+            </span>
+          </span>
         )}
       </div>
-      <Card className={`p-2 ${loading ? "opacity-60" : ""}`}>
-        <SortableTable
-          key={view}
-          rows={data.teams}
-          columns={columns}
-          rowKey={(t) => t.id}
-          initialSort={{ key: "pts", dir: "desc" }}
-          onRowClick={(t) => router.push(`/teams/${t.id}`)}
-        />
-      </Card>
+      <div className={`space-y-6 ${loading ? "opacity-60" : ""}`}>
+        {groups.map((g) => (
+          <section key={`${grouping}-${g.name}`}>
+            {grouping !== "league" && (
+              <SectionTitle>
+                {grouping === "conference"
+                  ? `${g.name}ern Conference`
+                  : `${g.name} Division`}
+              </SectionTitle>
+            )}
+            <Card className="p-2">
+              <SortableTable
+                key={`${grouping}-${stats}`}
+                rows={g.rows}
+                columns={columns}
+                rowKey={(t) => t.id}
+                initialSort={{ key: "pct", dir: "desc" }}
+                onRowClick={(t) => router.push(`/teams/${t.id}`)}
+              />
+            </Card>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

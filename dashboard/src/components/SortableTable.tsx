@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import { ShowMore, usePaging } from "./ShowMore";
 
 export interface Column<T> {
   key: string;
@@ -28,7 +29,7 @@ interface Props<T> {
 export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize, onRowClick, dense }: Props<T>) {
   const pad = dense ? "px-1.5" : "px-2.5";
   const [sort, setSort] = useState(initialSort ?? null);
-  const [showAll, setShowAll] = useState(false);
+  const paging = usePaging(pageSize ?? Infinity);
 
   const sorted = useMemo(() => {
     const col = sort && columns.find((c) => c.key === sort.key);
@@ -44,7 +45,7 @@ export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize,
     });
   }, [rows, columns, sort]);
 
-  const visible = pageSize && !showAll ? sorted.slice(0, pageSize) : sorted;
+  const visible = pageSize ? sorted.slice(0, paging.shown) : sorted;
 
   function toggle(col: Column<T>) {
     if (!col.sort) return;
@@ -113,15 +114,7 @@ export function SortableTable<T>({ rows, columns, rowKey, initialSort, pageSize,
           </tbody>
         </table>
       </div>
-      {pageSize && sorted.length > pageSize && (
-        <button
-          type="button"
-          onClick={() => setShowAll((v) => !v)}
-          className="mt-2 px-2.5 text-xs font-medium text-secondary hover:text-primary"
-        >
-          {showAll ? "Show fewer" : `Show all ${sorted.length}`}
-        </button>
-      )}
+      {pageSize && <ShowMore total={sorted.length} step={pageSize} {...paging} />}
     </div>
   );
 }

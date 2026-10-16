@@ -6,9 +6,9 @@ import { useMemo, useState } from "react";
 import { GameLogChart, type LogPoint } from "@/components/GameLogChart";
 import { ReportList } from "@/components/Reports";
 import { SortableTable, type Column } from "@/components/SortableTable";
-import { Card, Empty, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, Tile } from "@/components/ui";
+import { Card, Delta, Empty, PageState, SectionTitle, Segmented, StatusBadge, TeamLink, Tile } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { clock, fairOdds, num, pct, shortDate, signed, STAT_LABELS } from "@/lib/format";
+import { clock, fairOdds, num, pct, shortDate, STAT_LABELS } from "@/lib/format";
 import { MARKETS, marketValue } from "@/lib/markets";
 import type { PlayerDetail, PlayerGame, StatKey } from "@/lib/types";
 
@@ -17,6 +17,57 @@ const WINDOWS = [5, 10, 20] as const;
 const LOG_STATS: StatKey[] = ["pts", "reb", "ast", "fg3m", "stl", "blk", "tov"];
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const halfPoint = (x: number) => Math.max(0.5, Math.floor(x) + 0.5);
+
+const MAX_LINE = 99.5;
+
+/** Keep only what a line can contain while it's being typed: digits and one decimal
+ * point (a comma counts as one). */
+const cleanLine = (text: string) => {
+  const [whole, ...rest] = text.replace(/,/g, ".").replace(/[^\d.]/g, "").split(".");
+  return rest.length ? `${whole}.${rest.join("")}` : whole;
+};
+
+/** The line a typed value means, or null if it means nothing. Lines are half points,
+ * so anything else goes to the nearest one (26 or 26.2 → 26.5, 25.9 → 25.5), kept
+ * between 0.5 and 99.5. */
+function parseLine(text: string): number | null {
+  const v = Number(cleanLine(text));
+  if (!cleanLine(text) || cleanLine(text) === "." || !Number.isFinite(v)) return null;
+  return Math.min(MAX_LINE, Math.max(0.5, Math.round(v - 0.5) + 0.5));
+}
+
+/** A box to type a line into. It takes effect on Enter or when the box loses focus;
+ * Escape, or something that isn't a number, puts back the line it had. */
+function LineInput({ line, onCommit }: { line: number; onCommit: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(line));
+  const commit = () => {
+    const v = parseLine(draft) ?? line;
+    setDraft(String(v));
+    if (v !== line) onCommit(v);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      autoComplete="off"
+      maxLength={6}
+      value={draft}
+      aria-label="Line"
+      onChange={(e) => setDraft(cleanLine(e.target.value))}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          setDraft(String(line));
+          // Blurring commits the draft, so let the reset land first.
+          requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
+        }
+      }}
+      onFocus={(e) => e.currentTarget.select()}
+      className="tnum w-20 rounded-md border border-[var(--border)] bg-surface px-2 py-1 text-center text-sm font-semibold text-primary"
+    />
+  );
+}
 
 /** Test any line for any market against the player's games and the model's projection. */
 function PropExplorer({ player, season }: { player: PlayerDetail; season: string }) {
@@ -39,7 +90,7 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
   }, [book, projected, seasonGames, market]);
   const [custom, setCustom] = useState<{ market: string; line: number } | null>(null);
   const line = custom?.market === marketKey ? custom.line : defaultLine;
-  const setLine = (v: number) => setCustom({ market: marketKey, line: Math.max(0.5, v) });
+  const setLine = (v: number) => setCustom({ market: marketKey, line: v });
 
   const eligible = seasonGames.filter((g) => venue === "all" || (venue === "home") === (g.home ?? true));
   const shown = (span === "season" ? eligible : eligible.slice(0, span)).slice().reverse();
@@ -59,7 +110,7 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
   };
   const pOver = projected?.ladder.find(([l]) => l === line)?.[1] ?? (projected ? 0 : null);
   const guide = market.stats.length === 1 ? player.projection?.guide[market.stats[0]] : undefined;
-  const step = "rounded-md border border-[var(--border)] px-2 py-1 text-sm font-medium text-secondary hover:text-primary";
+  const step = "rounded-md border border-[var(--border)] px-2 py-1 text-sm font-medium text-secondary enabled:hover:text-primary disabled:opacity-40";
 
   return (
     <Card className="p-4">
@@ -72,7 +123,7 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
               aria-pressed={m.key === marketKey}
               onClick={() => setMarketKey(m.key)}
               className={`rounded-md px-2 py-1 text-xs font-medium ${
-                m.key === marketKey ? "bg-primary text-plane" : "border border-[var(--border)] text-secondary hover:text-primary"
+                m.key === marketKey ? "border border-transparent bg-accent/15 text-accent" : "border border-[var(--border)] text-secondary hover:text-primary"
               }`}
             >
               {m.label}
@@ -85,7 +136,7 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
           label="Games shown"
           value={String(span)}
           onChange={(v) => setSpan(v === "season" ? "season" : Number(v))}
-          options={[...WINDOWS.map((w) => ({ value: String(w), label: `Last ${w}` })), { value: "season", label: `All of ${season}` }]}
+          options={[...WINDOWS.map((w) => ({ value: String(w), label: `Last ${w}` })), { value: "season", label: "Season" }]}
         />
         <Segmented
           label="Venue"
@@ -99,19 +150,11 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
         />
         <div className="ml-auto flex items-center gap-1.5">
           <span className="text-xs text-muted">Line</span>
-          <button type="button" className={step} aria-label="Lower the line" onClick={() => setLine(line - 1)}>
+          <button type="button" className={step} aria-label="Lower the line" disabled={line <= 0.5} onClick={() => setLine(Math.max(0.5, line - 1))}>
             −
           </button>
-          <input
-            type="number"
-            step={1}
-            min={0.5}
-            value={line}
-            aria-label="Line"
-            onChange={(e) => Number.isFinite(e.target.valueAsNumber) && setLine(halfPoint(e.target.valueAsNumber - 0.01))}
-            className="tnum w-16 rounded-md border border-[var(--border)] bg-surface px-2 py-1 text-center text-sm font-semibold text-primary"
-          />
-          <button type="button" className={step} aria-label="Raise the line" onClick={() => setLine(line + 1)}>
+          <LineInput key={`${marketKey}-${line}`} line={line} onCommit={setLine} />
+          <button type="button" className={step} aria-label="Raise the line" disabled={line >= MAX_LINE} onClick={() => setLine(Math.min(MAX_LINE, line + 1))}>
             +
           </button>
           {book && line !== book.line && (
@@ -124,7 +167,20 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
 
       <div className="grid gap-6 lg:grid-cols-[1fr_260px]">
         {points.length > 0 ? (
-          <GameLogChart points={points} line={line} unit={market.label} />
+          <GameLogChart
+            points={points}
+            line={line}
+            unit={market.label}
+            lineSource={
+              book && line === book.line
+                ? "Sportsbook line"
+                : custom?.market === marketKey
+                  ? "Your line"
+                  : projected
+                    ? "Line near the model's projection"
+                    : "Line near his average"
+            }
+          />
         ) : (
           <p className="py-16 text-center text-sm text-muted">No games match these filters.</p>
         )}
@@ -132,7 +188,7 @@ function PropExplorer({ player, season }: { player: PlayerDetail; season: string
           <div>
             <div className="text-xs font-medium text-muted">Went over {line} {market.label}</div>
             <dl className="tnum mt-1.5 space-y-1 text-sm">
-              {[...WINDOWS.map((w) => [`Last ${w}`, eligible.slice(0, w)] as const), [season, eligible] as const].map(
+              {[...WINDOWS.map((w) => [`Last ${w}`, eligible.slice(0, w)] as const), ["Season", eligible] as const].map(
                 ([label, games]) => {
                   const r = hitRate(games);
                   return (
@@ -256,7 +312,7 @@ export default function PlayerPage() {
             />
             <p className="tnum mt-1.5 text-xs text-muted">
               {games.length > 0
-                ? `${games.length} game${games.length === 1 ? "" : "s"} in ${season} · ${teamsThatSeason.join(", ")}`
+                ? `${games.length} game${games.length === 1 ? "" : "s"} · ${teamsThatSeason.join(", ")}`
                 : `No games in ${season}`}
             </p>
           </div>
@@ -291,18 +347,21 @@ export default function PlayerPage() {
               return (
                 <Tile
                   key={k}
-                  label={`${STAT_LABELS[k]} · ${season}`}
+                  label={`${STAT_LABELS[k]} per game`}
                   value={num(s)}
-                  hint={<span className="tnum">Last 5 of {season}: {num(recent)} ({signed(recent - s)})</span>}
+                  hint={
+                    <span className="tnum">
+                      Last 5: {num(recent)}{" "}
+                      <Delta value={recent - s} threshold={Math.max(0.1 * s, 0.2)} />
+                    </span>
+                  }
                 />
               );
             })}
           </div>
 
           <section className="mb-8">
-            <SectionTitle hint="Pick a stat and set a line.">
-              Prop explorer
-            </SectionTitle>
+            <SectionTitle>Prop explorer</SectionTitle>
             <PropExplorer key={`${player.id}-${season}`} player={player} season={season} />
           </section>
         </>
@@ -319,7 +378,7 @@ export default function PlayerPage() {
 
       {games.length > 0 && (
         <section>
-          <SectionTitle>Game log · {season}</SectionTitle>
+          <SectionTitle>Game log</SectionTitle>
           <Card className="p-2">
             <SortableTable key={season} rows={games} columns={columns} rowKey={(g) => g.game_id} pageSize={15} />
           </Card>

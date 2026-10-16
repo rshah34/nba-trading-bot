@@ -93,7 +93,7 @@ questionable rotation player is priced both ways and only bets that survive both
 ## The dashboard (`dashboard/`, API in `api/`)
 
 A read-only site for exploring everything the bot knows: tonight's slate with projected
-box scores, a slate screener, fantasy projections, every player's
+box scores, projections for the whole slate, fantasy projections, every player's
 game log with a prop explorer (set any line, see hit rates and the model's
 probability), team matchup tables, the consolidated news, and the picks with their
 record. See [dashboard/README.md](../../dashboard/README.md).

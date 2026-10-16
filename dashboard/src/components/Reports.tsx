@@ -50,6 +50,17 @@ export function ReportList({ reports, showPlayer = true, columns = false }: { re
   );
 }
 
+function PlayerName({ injury, plain = false }: { injury: Injury; plain?: boolean }) {
+  const style = plain ? "hover:underline" : "font-medium text-primary hover:underline";
+  return injury.player_id ? (
+    <Link href={`/players/${injury.player_id}`} className={style}>
+      {injury.player}
+    </Link>
+  ) : (
+    <span className={plain ? "" : "font-medium text-primary"}>{injury.player}</span>
+  );
+}
+
 /** The official injury report for a team. */
 export function InjuryList({ injuries }: { injuries: Injury[] }) {
   const current = injuries.filter((i) => !i.long_term);
@@ -58,10 +69,9 @@ export function InjuryList({ injuries }: { injuries: Injury[] }) {
     <>
       <ul className="space-y-1.5">
         {current.map((i) => (
-          <li key={i.player} className="flex flex-wrap items-baseline gap-x-2 text-sm">
-            <span className="font-medium text-primary">{i.player}</span>
+          <li key={i.player} title={i.detail ?? undefined} className="flex items-center gap-2 text-sm">
+            <PlayerName injury={i} />
             <StatusBadge status={i.status} />
-            {i.detail && <span className="basis-full text-xs text-secondary">{i.detail}</span>}
           </li>
         ))}
       </ul>
@@ -71,7 +81,7 @@ export function InjuryList({ injuries }: { injuries: Injury[] }) {
           {longTerm.map((i, n) => (
             <span key={i.player} title={i.detail ?? undefined}>
               {n > 0 && ", "}
-              {i.player}
+              <PlayerName injury={i} plain />
             </span>
           ))}
         </p>

@@ -129,9 +129,7 @@ function Tonight() {
       </div>
 
       <section className="mb-8">
-        <SectionTitle hint="Up to three a day, where the model disagrees most with current prices. Paper bets.">
-          Picks
-        </SectionTitle>
+        <SectionTitle>Picks</SectionTitle>
         {data.picks.length > 0 ? (
           <PickCards picks={data.picks} />
         ) : (

@@ -12,6 +12,7 @@ export interface TeamRef {
   abbr: string;
   name: string;
   conference: string | null;
+  division?: string | null;
 }
 
 export interface Report {
@@ -106,7 +107,9 @@ export interface SlatePlayer {
   status: string | null;
   notes: string[];
   proj: FullLine;
+  /** Per-game averages over `season_label`, his most recent season with games. */
   season: Averages | null;
+  season_label: string | null;
   l5: Averages | null;
   lines: Record<string, SlateLine>;
 }
@@ -125,11 +128,15 @@ export interface GamePlayer {
   status: string | null;
   proj: StatLine | null;
   actual: StatLine | null;
+  /** Before the game: per-game averages from `avg_season`, his most recent season with games. */
+  avg: (StatLine & { gp: number }) | null;
+  avg_season: string | null;
   notes: string[];
 }
 
 export interface Injury {
   player: string;
+  player_id?: number | null;
   /** As it applies to the game in question: "Out" once he is ruled out of it. */
   status: string;
   detail: string | null;
