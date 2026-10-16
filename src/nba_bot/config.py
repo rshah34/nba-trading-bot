@@ -46,7 +46,7 @@ class Settings(BaseSettings):
         "draftkings,hardrockbet,kalshi,fanduel,betmgm,betrivers,espnbet,bovada,betonlineag"
     )
     # The books you can actually bet at. Picks are only made at one of their prices.
-    my_books: str = "draftkings,hardrockbet,kalshi"
+    my_books: str = "draftkings"
     # Day of the month the Odds API quota refills — used to pace spending.
     odds_quota_reset_day: int = 1
 

@@ -60,11 +60,10 @@ probability the bot would size on minus the market's. When both kinds qualify th
 of each is in. Only the picks are recorded, so the paper record is what was texted.
 
 **Your books.** Nine books are fetched for the price of one region and all of them set
-the market's fair probability, but a bet is only made at a book in `MY_BOOKS`
-(DraftKings, Hard Rock, Kalshi), at the best of their prices. When your
-book hangs a different line from the rest, the others' probabilities are carried to
-its line with the model's own distribution, so a line that is a point off shows up as
-the edge it is. Each pick stores the worst price (and line) still worth taking.
+the market's fair probability, but a bet is only made at the books in `MY_BOOKS`
+(just DraftKings). When DraftKings hangs a different line from the rest, the others'
+probabilities are carried to its line with the model's own distribution, so a line
+that is a point off shows up as the edge it is. Each pick stores the worst price (and line) still worth taking.
 
 **Late-scratch guard** (`picks.recheck`, in the close runs). A prop is re-projected
 on the newest injury report and texted as a PASS if the player is out or in doubt, or
