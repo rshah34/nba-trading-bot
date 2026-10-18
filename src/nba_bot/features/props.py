@@ -246,6 +246,9 @@ class Context:
     expected_margin: float = 0.0                    # points this team is expected to win by
     team_totals: dict[str, float] | None = None     # typical team total per stat vs. this opponent
     team_dates: tuple[date, ...] = ()               # the team's earlier games this season
+    # The team's games before this one that haven't been played yet: non-zero when
+    # projecting further ahead than its next game.
+    unplayed_before: int = 0
 
 
 @dataclass
@@ -468,7 +471,12 @@ def budget_adjustment(projected_minutes: float, ratio: float) -> Adjustment:
 
 def layoff_adjustment(log: list[GameLine], ctx: Context) -> Adjustment | None:
     """A player back from a layoff, or new to the team, is eased in. Minutes and
-    stats scale together: his per-minute rates hold up, his minutes don't."""
+    stats scale together: his per-minute rates hold up, his minutes don't.
+
+    Only for the team's next game: when there are games in between, his debut or
+    return comes in one of those, not this one."""
+    if ctx.unplayed_before:
+        return None
     last = log[-1]
     if last.team_id != ctx.team_id:
         mult, spread, note = _DEBUT_MULT, _DEBUT_SPREAD, "first game for a new team"
@@ -723,7 +731,7 @@ def team_form(data: PropsData, as_of: date, season: str) -> dict[int, TeamForm]:
 
 def game_context(
     form: dict[int, TeamForm], team_id: int, opp_id: int, home: bool, game_date: date,
-    opp_factors: dict[str, float] | None,
+    opp_factors: dict[str, float] | None, unplayed_before: int = 0,
 ) -> Context:
     """The pre-game context for one team. Blind to the betting line: the expected
     margin comes from point differentials, not from a spread."""
@@ -736,6 +744,7 @@ def game_context(
         game_date=game_date, team_id=team_id, home=home,
         expected_margin=margin + (HOME_COURT if home else -HOME_COURT),
         team_totals=totals, team_dates=mine.dates if mine else (),
+        unplayed_before=unplayed_before,
     )
 
 

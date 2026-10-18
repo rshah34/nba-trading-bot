@@ -168,6 +168,10 @@ def test_a_player_back_from_a_layoff_is_eased_in_and_harder_to_call():
     assert back.minutes_mult == back.mult("pts") == 0.92
     assert back.spread_mult > 1 and "missing 4 games" in back.notes[0]
     assert props.layoff_adjustment(log, _ctx(team_id=9)).minutes_mult == props._DEBUT_MULT
+    # Projecting a game further ahead: his debut, or his return, comes in an earlier one.
+    assert props.layoff_adjustment(log, _ctx(team_id=9, unplayed_before=1)) is None
+    late = _ctx(game_date=date(2026, 3, 9), team_dates=missed, unplayed_before=2)
+    assert props.layoff_adjustment(log, late) is None
 
 
 def test_context_reads_the_schedule_and_the_matchup_by_role():

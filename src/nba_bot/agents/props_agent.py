@@ -24,6 +24,7 @@ from nba_bot.data import odds_api
 from nba_bot.data.nba_stats import is_preseason
 from nba_bot.data.team_lookup import resolve_team_id
 from nba_bot.db.models import (
+    REAL_GAMES,
     Game,
     PlayerGameStats,
     PropBet,
@@ -200,12 +201,22 @@ class Slate:
     factors: dict[int, dict[str, float]]    # team -> what it allows vs. the league
     form: dict[int, TeamForm]
     signals: dict[int, list]                # player -> live news signals
+    unplayed: dict[int, int]                # team -> its unplayed games before this date
 
 
 def slate_for(session: Session, data: PropsData, game_date: date, as_of: datetime) -> Slate:
     season = data_agent._season_for_date(game_date)
+    unplayed: dict[int, int] = defaultdict(int)
+    for home, away in session.execute(
+        select(Game.home_team_id, Game.away_team_id).where(
+            REAL_GAMES, Game.status == "scheduled",
+            Game.game_date >= as_of.date(), Game.game_date < game_date)
+    ):
+        unplayed[home] += 1
+        unplayed[away] += 1
     return Slate(game_date, as_of, data.opponent_factors(game_date, season),
-                 team_form(data, game_date, season), news_agent.active_signals(session, as_of))
+                 team_form(data, game_date, season), news_agent.active_signals(session, as_of),
+                 dict(unplayed))
 
 
 @dataclass
@@ -229,7 +240,10 @@ def _name_absences(projections: dict[int, Projection], names: list[str]) -> None
 
 def team_view(
     session: Session, data: PropsData, slate: Slate, team_id: int, opp_id: int, home: bool,
+    preseason: bool = False,
 ) -> TeamView:
+    """`preseason` drops the game context: exhibition games are no one's debut or return,
+    and their rest, venue and margin say nothing about a player's role."""
     game_date = slate.game_date
     window = game_date - _ROSTER_WINDOW
     # Once the team has played this season, its roster is who has suited up in games
@@ -285,7 +299,8 @@ def team_view(
                if recent_minutes(pid) >= ROTATION_MIN and data.last_seen[pid] >= window][:2]
 
     factors = slate.factors.get(opp_id)
-    context = game_context(slate.form, team_id, opp_id, home, game_date, factors)
+    context = None if preseason else game_context(
+        slate.form, team_id, opp_id, home, game_date, factors, slate.unplayed.get(team_id, 0))
     logs = {pid: data.log_before(pid, game_date) for pid in roster if pid not in out_ids}
 
     def project(source: dict[int, list[GameLine]]) -> dict[int, Projection]:

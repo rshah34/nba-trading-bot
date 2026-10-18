@@ -246,7 +246,8 @@ def player_detail(session: Session, player_id: int) -> dict | None:
                 out["lines"][market] = {"line": cons[0], "books": cons[1], "over": round(cons[2], 3)}
 
     view = props_agent.team_view(session, data, slate, team_id, opp_id,
-                                 nxt is not None and nxt.home_team_id == team_id)
+                                 nxt is not None and nxt.home_team_id == team_id,
+                                 preseason=nxt is not None and is_preseason(nxt.game_id))
     proj = view.projections.get(player_id)
     if proj is not None:
         out["projection"] = _projection_payload(proj)
@@ -423,7 +424,8 @@ def slate_players(session: Session, on: date | None) -> dict:
         for team_id, opp_id in ((game.away_team_id, game.home_team_id),
                                 (game.home_team_id, game.away_team_id)):
             home = team_id == game.home_team_id
-            view = props_agent.team_view(session, data, slate, team_id, opp_id, home)
+            view = props_agent.team_view(session, data, slate, team_id, opp_id, home,
+                                         preseason=is_preseason(game.game_id))
             sides.append({
                 **teams[team_id],
                 # What the opponent gives up in each stat against the league (1.0 = average).
@@ -509,14 +511,16 @@ def game_detail(session: Session, game_id: str) -> dict | None:
             projections = project_team(
                 {pid: data.log_before(pid, game.game_date) for pid in played},
                 opp_factors=factors.get(opp_id),
-                context=game_context(form, team_id, opp_id, team_id == game.home_team_id,
-                                     game.game_date, factors.get(opp_id)))
+                context=None if is_preseason(game.game_id) else game_context(
+                    form, team_id, opp_id, team_id == game.home_team_id,
+                    game.game_date, factors.get(opp_id)))
             rows = [_player_row(pid, r.player_name, projections.get(pid), None, r)
                     for pid, r in played.items()]
             rows.sort(key=lambda r: r["actual"]["min"], reverse=True)
         else:
             view = props_agent.team_view(session, data, slate, team_id, opp_id,
-                                         team_id == game.home_team_id)
+                                         team_id == game.home_team_id,
+                                         preseason=is_preseason(game.game_id))
             rows = [_player_row(pid, data.names[pid], p, view.blocked.get(pid), None,
                                 data.log_before(pid, game.game_date))
                     for pid, p in view.projections.items() if p.minutes >= 5]
