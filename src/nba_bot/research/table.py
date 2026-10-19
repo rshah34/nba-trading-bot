@@ -12,11 +12,19 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from datetime import date
 
 import pandas as pd
 
 from nba_bot.backtest.props_backtest import replay
-from nba_bot.features.props import ROTATION_MIN, PropsData, over_under_probs, project_team
+from nba_bot.data.nba_stats import get_all_teams
+from nba_bot.features.props import (
+    ROTATION_MIN,
+    PropsData,
+    over_under_probs,
+    project_team,
+    team_form,
+)
 
 STATS = ("pts", "reb", "ast", "fg3m", "stl", "blk", "tov")
 # The market each stat is priced in; "pra" is points + rebounds + assists.
@@ -33,6 +41,12 @@ _ALTITUDE = {1610612743, 1610612762}  # Denver, Utah
 # line_*, over_*) are described once by pattern.
 FEATURES: dict[str, str] = {
     "season": "2024-25 or 2025-26",
+    "team": "the player's team, by abbreviation (BOS, LAL, ...)",
+    "opponent": "the opponent, by abbreviation",
+    "team_rank": "the player's team's rank by point margin so far this season (1 = best)",
+    "opp_rank": "the opponent's rank by point margin so far this season (1 = best); "
+                "noisy in the first weeks",
+    "after_all_star_break": "true for games after the All-Star break",
     "month": "calendar month of the game (10 = October … 4 = April)",
     "team_game_number": "the team's game number this season (1 = opener)",
     "home": "true if the player's team is at home",
@@ -68,6 +82,22 @@ OUTCOMES = ("proj_<stat>: projected mean; actual_<stat>: what happened; phi_<sta
             + ", ".join(TARGETS) + ". Also proj_minutes / actual_minutes.")
 
 
+def all_star_break(dates: list[date]) -> date | None:
+    """The first game day after the All-Star break: the end of the longest February
+    gap in a season's schedule (the break is the only multi-day pause then)."""
+    days = sorted({d for d in dates if d.month == 2})
+    gaps = [(b - a, b) for a, b in zip(days, days[1:])]
+    if not gaps:
+        return None
+    longest, after = max(gaps)
+    return after if longest.days >= 3 else None
+
+
+def _ranks(form) -> dict[int, int]:
+    order = sorted(form, key=lambda t: form[t].margin, reverse=True)
+    return {t: i + 1 for i, t in enumerate(order)}
+
+
 def _role(minutes: float) -> str:
     return next(name for floor, name in _ROLES if minutes >= floor)
 
@@ -80,6 +110,7 @@ def _avg(log, attr: str, n: int) -> float:
 def build(data: PropsData, seasons: tuple[str, ...] = SEASONS) -> pd.DataFrame:
     """Every projected player-game of 15+ projected minutes in the given seasons."""
     rows: list[dict] = []
+    abbr = {t["id"]: t["abbreviation"] for t in get_all_teams()}
     for season in seasons:
         # (game, team) -> who played, to find tonight's absences from last game.
         played: dict[tuple[str, int], set[int]] = defaultdict(set)
@@ -93,11 +124,16 @@ def build(data: PropsData, seasons: tuple[str, ...] = SEASONS) -> pd.DataFrame:
                  for t, gs in data.team_games.items()}
         ids = {t: [g.game_id for g in gs if g.season == season]
                for t, gs in data.team_games.items()}
+        brk = all_star_break([d for ds in dates.values() for d in ds])
+        ranks: dict = {}
 
         for tg in replay(data, season):
             if not tg.projections:
                 continue
             gd = tg.game.game_date
+            if gd not in ranks:
+                ranks = {gd: _ranks(team_form(data, gd, season))}
+            rank = ranks[gd]
             team_dates, opp_dates = dates[tg.team_id], dates[tg.opp_id]
             idx = team_dates.index(gd)
             rest = (gd - team_dates[idx - 1]).days - 1 if idx else None
@@ -127,6 +163,9 @@ def build(data: PropsData, seasons: tuple[str, ...] = SEASONS) -> pd.DataFrame:
                     "game_id": tg.game.game_id, "player_id": pid,
                     "player": data.names.get(pid, str(pid)),
                     "team_id": tg.team_id, "opp_id": tg.opp_id,
+                    "team": abbr.get(tg.team_id), "opponent": abbr.get(tg.opp_id),
+                    "team_rank": rank.get(tg.team_id), "opp_rank": rank.get(tg.opp_id),
+                    "after_all_star_break": brk is not None and gd >= brk,
                     "team_game_number": idx + 1, "home": tg.context.home,
                     "rest_days": rest, "b2b": rest == 0,
                     "three_in_four": idx >= 2 and (gd - team_dates[idx - 2]).days <= 3,

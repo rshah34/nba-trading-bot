@@ -9,6 +9,14 @@ import type { ResearchCandidate, ResearchFinding, ResearchPayload, ResearchRun, 
 
 const PAGE = 10;
 const POLL_MS = 3000;
+// Click to fill the focus. Each is a hunch about where the projections might miss.
+const EXAMPLES = [
+  "Bench players on the road",
+  "Players back from injury",
+  "Stars on the second night of a back-to-back",
+  "Are Celtics players' projections off after the All-Star break against top-10 teams?",
+  "Starters when a teammate who plays 30+ minutes is out",
+];
 
 const VERDICT = {
   applied: { label: "Applied", pill: "border-accent/40 bg-accent/10", dot: "bg-accent" },
@@ -241,11 +249,11 @@ function StartForm({ data, onStarted }: { data: ResearchPayload; onStarted: () =
     <Card className="mb-8 p-4">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex min-w-56 flex-1 flex-col gap-1 text-xs text-muted">
-          Focus
+          Where might the projections be wrong?
           <input
             value={focus}
             onChange={(e) => setFocus(e.target.value)}
-            placeholder="Anything, or e.g. rest and travel"
+            placeholder="A topic or a question. Leave blank to let the agent choose."
             maxLength={300}
             className="rounded-lg border border-[var(--border)] bg-surface px-2.5 py-1.5 text-sm text-primary placeholder:text-muted"
           />
@@ -280,6 +288,23 @@ function StartForm({ data, onStarted }: { data: ResearchPayload; onStarted: () =
           {limits.running ? "Running…" : sending ? "Starting…" : "Start run"}
         </button>
       </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="text-muted">Try:</span>
+        {EXAMPLES.map((ex) => (
+          <button
+            key={ex}
+            type="button"
+            onClick={() => setFocus(ex)}
+            className="rounded-full border border-[var(--border)] px-2 py-0.5 text-secondary transition-colors hover:border-accent hover:text-primary"
+          >
+            {ex}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-muted">
+        It finds where projected stats run too high or too low for a group of players or games. It doesn&apos;t answer
+        stats questions like a team&apos;s record or a player&apos;s averages.
+      </p>
       <p className="mt-2.5 text-xs text-secondary">
         {mode === "explore"
           ? "Explores 2024-25 and lists candidate fixes. The held-back season isn't touched."

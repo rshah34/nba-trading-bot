@@ -126,10 +126,13 @@ nba-bot costs            # what the Claude API has actually cost, by purpose and
 
 ### Research agent
 ```bash
-nba-bot research --focus "rest and travel"   # explore only: lists candidate fixes (focus optional)
+nba-bot research --focus "bench players on the road"   # explore only: lists candidate fixes
+nba-bot research --focus "Are Celtics projections off after the All-Star break against top-10 teams?"
 nba-bot research --confirm --budget 2        # also scores fixes on the held-back season
 nba-bot research-applied 7                   # mark finding 7 as put into the model
 ```
+The focus (optional) is a topic or a question about where the projections might miss;
+the agent says so when a question is about something else, like a team's record.
 Each run is capped by `--budget` (at most $5), one runs at a time, and all runs together
 stop at $5 a day. The dashboard's Research page starts the same runs and follows them
 live; it only accepts requests from this machine.

@@ -142,18 +142,26 @@ def test_a_real_effect_passes_confirmation(ws_table):
 def test_noise_fails_confirmation():
     clean = _table(planted=1.0, seed=2)      # nothing to find
     for m in (0.97, 1.03):
-        # The minimum-gain gate is set aside here so the held-back checks are what decide.
-        ws = tools.Workspace(clean, min_gain=-1)
+        # The exploration gates are set aside here so the held-back checks are what decide.
+        ws = tools.Workspace(clean, gates=False)
         result = ws.confirm("home court moves scoring", NOISE, "pts", m)
         assert result.verdict == "fail", (m, result.reasons)
 
 
-def test_a_fix_too_small_to_matter_never_reaches_the_held_back_season():
-    ws = tools.Workspace(_table(planted=1.0, seed=2))
+def test_fixes_the_exploration_season_does_not_support_never_reach_the_held_back_one(ws_table):
+    noise = tools.Workspace(_table(planted=1.0, seed=2))
     with pytest.raises(tools.ToolError, match="not worth a held-back look"):
-        ws.confirm("home court moves scoring", NOISE, "pts", 0.99)
-    assert ws.confirms_left == tools.CONFIRMS_PER_RUN and ws.confirmations == []
-    assert ws.describe()["rules"]["confirm_needs"].startswith("a whole-model MAE gain")
+        noise.confirm("home court moves scoring", NOISE, "pts", 0.99)
+    planted = tools.Workspace(ws_table)
+    honest = planted.try_fix(B2B, "pts")["multiplier"]          # about 0.88
+    with pytest.raises(tools.ToolError, match="goes past the bias-zeroing multiplier"):
+        planted.confirm("tired legs, oversold", B2B, "pts", 0.8)
+    with pytest.raises(tools.ToolError, match="goes past"):
+        planted.confirm("the wrong way", B2B, "pts", 1.05)
+    for ws in (noise, planted):
+        assert ws.confirms_left == tools.CONFIRMS_PER_RUN and ws.confirmations == []
+    assert planted.confirm("tired legs", B2B, "pts", honest).verdict == "pass"
+    assert "bias-zeroing" in planted.describe()["rules"]["confirm_needs"]
 
 
 def test_the_bar_rises_with_every_confirmation_ever_run(ws_table):
@@ -226,7 +234,7 @@ def test_a_run_explores_confirms_records_and_finishes(db, ws_table, monkeypatch)
         [("describe", {})],
         [("measure", {"where": B2B}), ("try_fix", {"where": B2B, "stat": "pts"})],
         [("confirm", {"hypothesis": "tired legs", "rationale": "back-to-backs", "where": B2B,
-                      "stat": "pts", "multiplier": 0.88})],
+                      "stat": "pts", "multiplier": 0.9})],
         [("finish", {"summary": "Back-to-backs are over-projected.",
                      "explored": [{"idea": "home court", "outcome": "nothing there"}]})],
     ], monkeypatch)
@@ -296,3 +304,10 @@ def test_a_run_starts_only_within_the_limits(db):
     assert "today's research spend" in agent.why_not_start(db, 2, now)
     assert run.status == "error" and "Interrupted" in run.summary
     assert agent.why_not_start(db, 1, now) is None
+
+
+def test_the_all_star_break_is_the_longest_february_gap():
+    days = [date(2025, 2, d) for d in (1, 3, 5, 7, 10, 12, 13, 19, 20, 22)] + [date(2025, 3, 1)]
+    assert table.all_star_break(days) == date(2025, 2, 19)
+    assert table.all_star_break([date(2025, 2, d) for d in range(1, 28)]) is None   # no break
+    assert table.all_star_break([date(2025, 3, 1)]) is None                          # no February

@@ -76,10 +76,21 @@ spot, a role and a missing teammate), so cut by two or three fields together. Ch
 that an effect is the one you think it is (is it back-to-backs, or road games?).
 
 Before you confirm, `try_fix` the fix on the exploration season: `confirm` refuses \
-any fix that cuts the whole model's error by less than the minimum in describe(), \
-because smaller gains don't move a bet. A bias inside a slice the model already \
+a fix the exploration season doesn't support - see the rules in describe(). In \
+short, the fix that exactly removes the bias must cut the whole model's error by the \
+minimum, your multiplier can't go past that fix, and the over/under probabilities \
+can't get worse. A bias inside a slice the model already \
 adjusts for means that adjustment is too strong or too weak. Most of a run should be \
 exploring; confirm only the ideas you would bet on.
+
+A run may come with a focus from the user, written as a topic or as a full \
+question. Read it as a question about where the projections miss: "Celtics after the \
+All-Star break against top teams" means the projection bias for Celtics players in \
+those games. If it asks for something these tools can't measure - a team's record or \
+results, a player's averages, anything that isn't about the projections' errors - \
+say so in the first sentence of your summary, then answer the closest question the \
+tools can. One team's or one player's games are rarely enough to conclude anything; \
+say how much data there was.
 
 Ideas tested in earlier runs are listed in the first message; don't repeat one \
 unless your version is materially different.
@@ -259,13 +270,13 @@ def prior_ideas(session: Session) -> list[str]:
 
 
 def _opening(focus: str | None, prior: list[str], mode: str, confirms: int) -> str:
-    parts = [f"Focus for this run: {focus}." if focus
+    parts = [f"Focus for this run, from the user: {focus.strip()}" if focus
              else "No particular focus: look wherever you think the model is most likely wrong."]
     if mode == "explore":
         parts.append("This run is explore-only: confirm is not available and the held-back "
                      "season stays untouched. In finish, list your strongest candidate fixes "
                      "with the multiplier try_fix found, so a later run can confirm them; "
-                     "list only fixes that clear the minimum whole-model gain in describe().")
+                     "list only fixes that would pass the rules for confirming in describe().")
     else:
         parts.append(f"You may run up to {confirms} confirmations; use only what your "
                      "evidence supports. Leave candidates empty in finish.")
