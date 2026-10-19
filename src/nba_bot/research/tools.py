@@ -31,6 +31,11 @@ from nba_bot.research.table import FEATURES, OUTCOMES, TARGETS, over_probability
 
 EXPLORE, CONFIRM = "2024-25", "2025-26"
 MIN_ROWS, MIN_PLAYERS = 500, 40      # in the slice, in both seasons, for a confirmation
+# A fix must cut the whole model's MAE on the exploration season by at least this much
+# before it may be confirmed: smaller gains are real at best but don't move a bet, and
+# the held-back season is too scarce to spend on them. (The first run's blocks and
+# steals fixes gained 0.0007 and 0.0004, and both failed on the held-back season.)
+MIN_GAIN = 0.001
 CONFIRMS_PER_RUN = 5
 ALPHA = 0.05
 MULTIPLIER_RANGE = (0.8, 1.25)
@@ -194,13 +199,14 @@ class Workspace:
     held-back season, across every earlier run: each one raises the bar."""
 
     def __init__(self, table: pd.DataFrame, prior_confirmations: int = 0,
-                 confirms_per_run: int = CONFIRMS_PER_RUN):
+                 confirms_per_run: int = CONFIRMS_PER_RUN, min_gain: float = MIN_GAIN):
         self.explore = table[table["season"] == EXPLORE].reset_index(drop=True)
         self.held = table[table["season"] == CONFIRM].reset_index(drop=True)
         if self.explore.empty or self.held.empty:
             raise ToolError(f"the research table needs both {EXPLORE} and {CONFIRM}")
         self.prior_confirmations = prior_confirmations
         self.confirms_left = confirms_per_run
+        self.min_gain = min_gain
         self.confirmations: list[Confirmation] = []
         self._explore_scores = _Scores.of(self.explore)
         self._held_scores: _Scores | None = None   # computed on the first confirmation
@@ -216,7 +222,9 @@ class Workspace:
             "ops": list(_OPS),
             "baseline_explore": _slice_summary(self.explore, TARGETS),
             "rules": {
-                "confirm_needs": f"{MIN_ROWS}+ rows and {MIN_PLAYERS}+ players in the slice in "
+                "confirm_needs": f"a whole-model MAE gain of at least {self.min_gain} on the "
+                                 f"exploration season (see try_fix); {MIN_ROWS}+ rows and "
+                                 f"{MIN_PLAYERS}+ players in the slice in "
                                  "both seasons; the same direction of bias on the held-back "
                                  "season, clear of zero at the corrected threshold; and lower "
                                  "whole-model MAE with no worse Brier there",
@@ -274,12 +282,18 @@ class Workspace:
         if multiplier == 1.0:
             raise ToolError("a multiplier of 1 changes nothing")
         e_rows, h_rows = mask(self.explore, where), mask(self.held, where)
-        # Sizes are checked before any result is looked at, so a refusal costs nothing.
+        # Everything below is checked before any held-back result is looked at, so a
+        # refusal costs nothing.
         for name, df, rows in (("exploration", self.explore, e_rows), ("held-back", self.held, h_rows)):
             n, players = int(rows.sum()), int(df.loc[rows, "player_id"].nunique())
             if n < MIN_ROWS or players < MIN_PLAYERS:
                 raise ToolError(f"slice too small in the {name} season: {n} rows, {players} "
                                 f"players (needs {MIN_ROWS} and {MIN_PLAYERS})")
+        explore = self.try_fix(where, stat, multiplier)
+        gain = explore["whole_model"]["mae_before"] - explore["whole_model"]["mae_after"]
+        if gain < self.min_gain:
+            raise ToolError(f"on the exploration season this fix cuts whole-model MAE by only "
+                            f"{gain:.5f} (needs {self.min_gain}); not worth a held-back look")
 
         self.confirms_left -= 1
         k = self.prior_confirmations + len(self.confirmations) + 1
@@ -310,7 +324,7 @@ class Workspace:
 
         result = Confirmation(
             hypothesis=hypothesis, where=where or [], stat=stat, multiplier=round(multiplier, 4),
-            explore=self.try_fix(where, stat, multiplier),
+            explore=explore,
             confirm={"in_slice": {"before": _slice_summary(held, (stat,)),
                                   "after": _slice_summary(fixed[h_rows], (stat,))},
                      "whole_model": whole},

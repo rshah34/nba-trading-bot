@@ -347,6 +347,7 @@ export type ResearchRun = {
   status: string;
   mode: "explore" | "confirm";
   focus: string | null;
+  prompt: string | null;
   budget_usd: number | null;
   cost_usd: number;
   turns: number;

@@ -142,8 +142,18 @@ def test_a_real_effect_passes_confirmation(ws_table):
 def test_noise_fails_confirmation():
     clean = _table(planted=1.0, seed=2)      # nothing to find
     for m in (0.97, 1.03):
-        result = tools.Workspace(clean).confirm("home court moves scoring", NOISE, "pts", m)
+        # The minimum-gain gate is set aside here so the held-back checks are what decide.
+        ws = tools.Workspace(clean, min_gain=-1)
+        result = ws.confirm("home court moves scoring", NOISE, "pts", m)
         assert result.verdict == "fail", (m, result.reasons)
+
+
+def test_a_fix_too_small_to_matter_never_reaches_the_held_back_season():
+    ws = tools.Workspace(_table(planted=1.0, seed=2))
+    with pytest.raises(tools.ToolError, match="not worth a held-back look"):
+        ws.confirm("home court moves scoring", NOISE, "pts", 0.99)
+    assert ws.confirms_left == tools.CONFIRMS_PER_RUN and ws.confirmations == []
+    assert ws.describe()["rules"]["confirm_needs"].startswith("a whole-model MAE gain")
 
 
 def test_the_bar_rises_with_every_confirmation_ever_run(ws_table):
@@ -263,6 +273,7 @@ def test_an_explore_only_run_never_sees_confirm_and_keeps_its_candidates(db, ws_
     ], monkeypatch, mode="explore")
     assert "confirm" not in {t["name"] for t in claude.requests[0]["tools"]}
     assert "explore-only" in claude.requests[0]["messages"][0]["content"]
+    assert run.prompt == claude.requests[0]["messages"][0]["content"]   # what the page shows
     assert db.query(ResearchFinding).count() == 0 and agent.confirmations_so_far(db) == 0
     assert run.candidates == [candidate]
     assert [line.split(":")[0] for line in (e["line"] for e in run.log)] == [

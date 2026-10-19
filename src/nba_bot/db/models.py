@@ -347,6 +347,7 @@ class ResearchRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model: Mapped[str] = mapped_column(String, nullable=False)
     focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)   # the opening message Claude got
     mode: Mapped[str] = mapped_column(String, nullable=False, default="confirm")  # explore | confirm
     status: Mapped[str] = mapped_column(String, nullable=False)
     budget_usd: Mapped[float | None] = mapped_column(Numeric, nullable=True)

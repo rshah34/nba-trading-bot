@@ -30,7 +30,9 @@ from nba_bot.research.table import TARGETS
 log = logging.getLogger("nba_bot.research")
 
 MODEL = "claude-sonnet-5-5"
-EFFORT = "medium"            # Anthropic's starting point for multistep tool use on this model
+# The first run at "medium" stopped after 7 turns and 6% of its budget, never cutting
+# the data by more than one field at a time.
+EFFORT = "high"
 DEFAULT_BUDGET = 2.0         # dollars per run
 MAX_TURNS = 60
 _WARN_AT = 0.8               # share of the budget at which Claude is told to wrap up
@@ -60,13 +62,24 @@ through `confirm`, which scores one fix you have stated in full. Confirmations a
 limited, and every confirmation ever run raises the bar for the next, so spend them \
 on your strongest ideas.
 
+What gets bet is points + rebounds + assists (PRA), with points, rebounds and \
+assists guidance alongside; threes, steals, blocks and turnovers only feed a fantasy \
+page. A fix matters in proportion to how much it moves those.
+
 Bias is projection minus actual: positive means the model projects too high. A \
-worthwhile idea has a basketball reason and shows up in exploration as a bias whose \
-error bar is clear of zero, over a few hundred player-games and dozens of players at \
-least. Check that an effect is the one you think it is (is it back-to-backs, or road \
-games?), and use `try_fix` to see whether a fix helps the whole model, not only its \
-slice, before you confirm it. A bias inside a slice the model already adjusts for \
-means that adjustment is too strong or too weak.
+worthwhile idea has a basketball mechanism - why would the model be wrong for these \
+players in these games? "The model over-projects X" restates the number; it is not a \
+reason. It shows up in exploration as a bias whose error bar is clear of zero, over a \
+few hundred player-games and dozens of players at least. Single fields are a start; \
+the model's blind spots are more likely where conditions meet (a role and a schedule \
+spot, a role and a missing teammate), so cut by two or three fields together. Check \
+that an effect is the one you think it is (is it back-to-backs, or road games?).
+
+Before you confirm, `try_fix` the fix on the exploration season: `confirm` refuses \
+any fix that cuts the whole model's error by less than the minimum in describe(), \
+because smaller gains don't move a bet. A bias inside a slice the model already \
+adjusts for means that adjustment is too strong or too weak. Most of a run should be \
+exploring; confirm only the ideas you would bet on.
 
 Ideas tested in earlier runs are listed in the first message; don't repeat one \
 unless your version is materially different.
@@ -251,7 +264,8 @@ def _opening(focus: str | None, prior: list[str], mode: str, confirms: int) -> s
     if mode == "explore":
         parts.append("This run is explore-only: confirm is not available and the held-back "
                      "season stays untouched. In finish, list your strongest candidate fixes "
-                     "with the multiplier try_fix found, so a later run can confirm them.")
+                     "with the multiplier try_fix found, so a later run can confirm them; "
+                     "list only fixes that clear the minimum whole-model gain in describe().")
     else:
         parts.append(f"You may run up to {confirms} confirmations; use only what your "
                      "evidence supports. Leave candidates empty in finish.")
@@ -319,8 +333,9 @@ def run_research(
     ws = tools.Workspace(table, prior_confirmations=confirmations_so_far(session),
                          confirms_per_run=confirms)
     offered = tools_for(run.mode)
-    messages: list[dict] = [{"role": "user", "content": _opening(
-        run.focus, prior_ideas(session), run.mode, confirms)}]
+    run.prompt = _opening(run.focus, prior_ideas(session), run.mode, confirms)
+    session.commit()
+    messages: list[dict] = [{"role": "user", "content": run.prompt}]
     spent, warned, nudged = 0.0, False, False
 
     def note(line: str) -> None:

@@ -170,6 +170,16 @@ function RunCard({ run }: { run: ResearchRun }) {
           {run.budget_usd != null && ` of $${num(run.budget_usd, 2)}`}
         </div>
       </div>
+      {run.prompt && (
+        <details className="mt-1.5 text-xs text-secondary">
+          <summary className="cursor-pointer font-medium text-accent">What Claude was asked</summary>
+          <p className="mt-1.5 whitespace-pre-line rounded-md border border-[var(--border)] p-2.5">{run.prompt}</p>
+          <p className="mt-1 text-muted">
+            Plus the standing instructions every run gets: how the model projects, what the tools do, and the
+            rules for confirming.
+          </p>
+        </details>
+      )}
       {run.summary && <p className="mt-1.5 text-sm text-secondary">{run.summary}</p>}
       {run.candidates.length > 0 && (
         <div className="mt-3 space-y-3">

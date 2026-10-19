@@ -724,7 +724,8 @@ def research(session: Session) -> dict:
     rows = session.execute(select(ResearchRun).order_by(ResearchRun.started_at.desc())).scalars().all()
     runs = [
         {"id": r.id, "started_at": _iso(r.started_at), "status": r.status, "mode": r.mode,
-         "focus": r.focus, "budget_usd": _f(r.budget_usd), "cost_usd": _f(r.cost_usd),
+         "focus": r.focus, "prompt": r.prompt,
+         "budget_usd": _f(r.budget_usd), "cost_usd": _f(r.cost_usd),
          "turns": r.turns, "summary": r.summary, "explored": r.explored or [],
          "candidates": [{**c, "slice": _slice_words(c["where"])} for c in r.candidates or []],
          "log": [e["line"] for e in r.log or []], "findings": by_run.get(r.id, [])}
