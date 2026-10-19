@@ -162,20 +162,14 @@ export default function GamePage() {
         </section>
       )}
 
-      {game.reasoning && (
+      {game.key_factors && game.key_factors.length > 0 && (
         <Card className="mb-8 p-4">
           <div className="text-xs font-medium text-muted">Why the model sees it this way</div>
-          {game.key_factors && game.key_factors.length > 0 && (
-            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-secondary marker:text-accent">
-              {game.key_factors.map((f) => (
-                <li key={f}>{f}</li>
-              ))}
-            </ul>
-          )}
-          <details className="mt-2 text-sm text-secondary">
-            <summary className="cursor-pointer text-xs font-medium text-accent">Full reasoning</summary>
-            <p className="mt-1.5 whitespace-pre-line">{game.reasoning}</p>
-          </details>
+          <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-secondary marker:text-accent">
+            {game.key_factors.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
         </Card>
       )}
 

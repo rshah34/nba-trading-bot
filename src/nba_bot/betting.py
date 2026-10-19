@@ -1,9 +1,8 @@
 """Bet-decision layer: turn a calibrated win probability + market odds into a
 sized bet, and judge it by closing-line value (CLV).
 
-Design stance, earned the hard way (see the calibration/A-B findings): our model is
-~coin-flip at *predicting* games, so we do NOT try to beat Vegas at prediction. We
-bet only the specific spots where our honestly-calibrated probability disagrees
+Design stance: the market sees everything our models see and more, so we do NOT try
+to beat Vegas at prediction across the board. We bet only the specific spots where our honestly-calibrated probability disagrees
 enough with the de-vigged market price to clear a conservative edge threshold; we
 size by FRACTIONAL Kelly (full Kelly on an uncertain edge is a fast road to ruin);
 and we judge ourselves primarily by **CLV** — did we get a better number than the

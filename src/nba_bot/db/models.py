@@ -233,16 +233,6 @@ class Bet(Base):
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class CalibrationParams(Base):
-    __tablename__ = "calibration_params"
-
-    model_version: Mapped[str] = mapped_column(String, primary_key=True)
-    a: Mapped[float] = mapped_column(Numeric, nullable=False)
-    b: Mapped[float] = mapped_column(Numeric, nullable=False)
-    n: Mapped[int] = mapped_column(Integer, nullable=False)
-    fitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-
-
 class PropOdds(Base):
     __tablename__ = "prop_odds"
 
@@ -347,3 +337,40 @@ class PropProjection(Base):
     proj_mean: Mapped[float] = mapped_column(Numeric, nullable=False)
     proj_minutes: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     actual_value: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+
+
+class ResearchRun(Base):
+    __tablename__ = "research_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    explored: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class ResearchFinding(Base):
+    __tablename__ = "research_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slice: Mapped[list] = mapped_column(JSON, nullable=False)
+    stat: Mapped[str] = mapped_column(String, nullable=False)
+    multiplier: Mapped[float] = mapped_column(Numeric, nullable=False)
+    explore_season: Mapped[str] = mapped_column(String, nullable=False)
+    confirm_season: Mapped[str] = mapped_column(String, nullable=False)
+    verdict: Mapped[str] = mapped_column(String, nullable=False)
+    reasons: Mapped[list] = mapped_column(JSON, nullable=False)
+    explore: Mapped[dict] = mapped_column(JSON, nullable=False)
+    confirm: Mapped[dict] = mapped_column(JSON, nullable=False)
+    threshold_z: Mapped[float] = mapped_column(Numeric, nullable=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+

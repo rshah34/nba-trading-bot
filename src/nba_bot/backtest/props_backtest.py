@@ -25,14 +25,18 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date
 
 from nba_bot.features.props import (
     DEFAULT_PARAMS,
     MARKETS,
+    Context,
+    GameInfo,
     GameLine,
     Params,
+    Projection,
     PropsData,
     game_context,
     over_under_probs,
@@ -87,17 +91,31 @@ def calibration(stats: dict[str, MarketStats]) -> list[dict]:
     ]
 
 
-def run_backtest(
+@dataclass
+class TeamGame:
+    """One team's side of one game, projected as the model would have before tip."""
+
+    game: GameInfo
+    team_id: int
+    opp_id: int
+    context: Context
+    opp_factors: dict[str, float] | None
+    logs: dict[int, list[GameLine]]       # each player's games before this one
+    actual: dict[int, GameLine]           # what each player did in it
+    projections: dict[int, Projection]
+    budget_from: dict[int, list[GameLine]] | None
+
+
+def replay(
     data: PropsData,
     season: str,
     *,
     params: Params = DEFAULT_PARAMS,
     use_opponent: bool = True,
     availability: str = "oracle",
-    min_minutes: float = 15.0,
     start: date | None = None,
-) -> dict[str, MarketStats]:
-    """Project every rotation player in every game of a season and score it."""
+) -> Iterator[TeamGame]:
+    """Project both teams in every game of a season, in date order, point-in-time."""
     # (game, team) -> the lines of the players who actually played.
     played: dict[tuple[str, int], list[tuple[int, int]]] = defaultdict(list)
     for pid, log in data.logs.items():
@@ -109,8 +127,6 @@ def run_backtest(
         {g.game_id: g for gs in data.team_games.values() for g in gs if g.season == season}.values(),
         key=lambda g: (g.game_date, g.game_id),
     )
-    stats: dict[str, MarketStats] = {m: MarketStats() for m in MARKETS}
-
     factors: dict[int, dict[str, float]] = {}
     form: dict = {}
     factors_date: date | None = None
@@ -133,17 +149,34 @@ def run_backtest(
                     pid: data.log_before(pid, game.game_date)
                     for g in previous for pid, _ in played.get((g.game_id, team_id), [])
                 } or None
+            context = game_context(form, team_id, opp_id, team_id == game.home_id,
+                                   game.game_date, factors.get(opp_id))
             projections = project_team(
-                logs, opp_factors=factors.get(opp_id), params=params,
-                context=game_context(form, team_id, opp_id, team_id == game.home_id,
-                                     game.game_date, factors.get(opp_id)),
+                logs, opp_factors=factors.get(opp_id), params=params, context=context,
                 use_budget=availability != "none", budget_from=budget_from,
             )
-            for pid, idx in tonight:
-                proj = projections.get(pid)
-                if proj is None or proj.minutes < min_minutes:
-                    continue
-                _score(stats, proj, logs[pid], data.logs[pid][idx], season)
+            yield TeamGame(game, team_id, opp_id, context, factors.get(opp_id), logs,
+                           {pid: data.logs[pid][idx] for pid, idx in tonight}, projections,
+                           budget_from)
+
+
+def run_backtest(
+    data: PropsData,
+    season: str,
+    *,
+    params: Params = DEFAULT_PARAMS,
+    use_opponent: bool = True,
+    availability: str = "oracle",
+    min_minutes: float = 15.0,
+    start: date | None = None,
+) -> dict[str, MarketStats]:
+    """Project every rotation player in every game of a season and score it."""
+    stats: dict[str, MarketStats] = {m: MarketStats() for m in MARKETS}
+    for tg in replay(data, season, params=params, use_opponent=use_opponent,
+                     availability=availability, start=start):
+        for pid, proj in tg.projections.items():
+            if pid in tg.actual and proj.minutes >= min_minutes:
+                _score(stats, proj, tg.logs[pid], tg.actual[pid], season)
     return stats
 
 

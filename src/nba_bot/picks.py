@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from nba_bot import betting
-from nba_bot.agents import analysis_agent, betting_agent, props_agent
+from nba_bot.agents import betting_agent, data_agent, props_agent
 from nba_bot.config import settings
 from nba_bot.db.models import Bet, Game, PropBet, Team
 from nba_bot.features.props import MARKET_LABELS, PropsData, load_props_data
@@ -110,7 +110,7 @@ def _status_changes(session: Session, team_id: int, game_date: date, since: date
     """(players ruled out, players no longer out) of a game between two moments."""
     def out(at: datetime) -> set[str]:
         return {i["player"]
-                for i in analysis_agent.current_injuries(session, team_id, at, game_date)
+                for i in data_agent.current_injuries(session, team_id, at, game_date)
                 if (i["status"] or "").lower() == "out"}
 
     before, after = out(since), out(as_of)

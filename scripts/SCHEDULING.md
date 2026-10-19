@@ -4,7 +4,7 @@ Two commands. Every step inside a run is fault-isolated (a flaky API call is log
 
 | Run | Command | What it does |
 |-----|---------|--------------|
-| daily | `nba-bot daily` | final scores + box scores + today's rosters → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
+| daily | `nba-bot daily` | final scores + box scores + today's rosters → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → predict each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
 | close | `nba-bot daily-close` | re-read the rosters and injury report and text an update if they undercut a pick; re-capture game lines + the prop markets we hold → these become the **closing prices** |
 
 ## Why local (not cloud)
@@ -30,7 +30,7 @@ One launchd job calls `scripts/run_due.sh` every hour at :30, and the script run
 
 **The picks.** Each day the bot records and texts at most `MAX_DAILY_BETS` bets (default 3), chosen across game winners and player props by edge — the probability it would size on, minus the market's. When both kinds qualify, the best of each is included. They are chosen in the afternoon because props are won on knowing who plays, which firms up through the day (with *stale* availability the projections are worse than with none), and because the price recorded is then the one on offer when the text reaches you.
 
-**Afternoon games are not bet.** A game that tips before the run (weekend and holiday matinees) is skipped: no prediction, no pick. To cover them, run `nba-bot daily` by hand in the morning; the afternoon run then keeps to the same daily cap and doesn't pay again for games already predicted.
+**Afternoon games are not bet.** A game that tips before the run (weekend and holiday matinees) is skipped: no prediction, no pick. To cover them, run `nba-bot daily` by hand in the morning; the afternoon run then keeps to the same daily cap.
 
 **Why the close is its own run.** CLV — did you get a better number than the close — only exists if the bet and the close are different snapshots. Merge them and CLV is always ~0, which guts the metric the whole system is scored on.
 
@@ -67,14 +67,13 @@ Every digest is also written to `logs/digest-<date>.txt`, so a failed send loses
 
 ## Claude API cost
 
-Two things call Claude, and both are logged per call to `logs/api-usage.jsonl` (`nba-bot costs` totals it):
+One thing in the daily run calls Claude — reading the news — and every call is logged to `logs/api-usage.jsonl` (`nba-bot costs` totals it). Game predictions come from a statistical model and cost nothing.
 
 | Call | When | Model | Measured cost |
 |------|------|-------|---------------|
-| Game prediction | once per game per day | `ANALYSIS_MODEL` (claude-sonnet-5) | ~$0.01 a game, so under $0.10 on a full night |
 | News reading | new articles about teams playing today (each article once) | `NEWS_MODEL` (claude-haiku-5-5) | ~$0.02 per 140 articles |
 
-Nothing is paid for twice: a game already predicted today is skipped on a re-run, each article is read once, and on a day with no games the run only settles results — no model is called and no odds are bought. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
+Nothing is paid for twice: each article is read once, and on a day with no games the run only settles results — no model is called and no odds are bought. `claude-opus-5-5` as `NEWS_MODEL` reads the same articles for ~40x the price; on a side-by-side it flagged 17 players out to Haiku's 15, agreeing on 12.
 
 ## Odds API budget
 
@@ -117,5 +116,5 @@ On macOS, cron needs Full Disk Access granted to `/usr/sbin/cron` in System Sett
 2. `nba-bot notify-test` — you should get a text.
 3. `scripts/schedule.sh install`.
 4. Props stay unbet for each player's first 5 games with his team (opening-week projections lean on last season's role); every line is still priced and logged. `nba-bot props-record` shows the model vs. the market on those lines from night one.
-5. After a week of resolved games, re-fit game calibration on the live model: `nba-bot calibrate --model-version claude-sonnet-5 --save`.
+5. Game bets start once both teams have played 10 games (about three weeks in); before that the model sits out.
 6. Judge by CLV, not by a week of P&L.

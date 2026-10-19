@@ -11,10 +11,10 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from nba_bot.agents import analysis_agent, betting_agent, news_agent, props_agent
+from nba_bot.agents import betting_agent, data_agent, news_agent, props_agent
 from nba_bot.agents.data_agent import _season_for_date
-from nba_bot.config import settings
 from nba_bot.data.nba_stats import is_preseason
+from nba_bot.features.games import GAME_MODEL
 from nba_bot.db.models import (
     REAL_GAMES,
     Bet,
@@ -165,7 +165,7 @@ def _injury_rows(session: Session, team_id: int, now: datetime, game_date: date)
         {"player": i["player"], "player_id": props_agent._resolve_player(data, i["player"], {team_id}),
          "status": i["status"], "detail": i["reason"],
          "long_term": i["return_date"] is not None and i["return_date"] - game_date > _LONG_TERM}
-        for i in analysis_agent.current_injuries(session, team_id, now, game_date)
+        for i in data_agent.current_injuries(session, team_id, now, game_date)
     ]
 
 
@@ -252,7 +252,7 @@ def player_detail(session: Session, player_id: int) -> dict | None:
     if proj is not None:
         out["projection"] = _projection_payload(proj)
     name = normalize_name(data.names[player_id])
-    listed = next((i for i in analysis_agent.current_injuries(session, team_id, now, slate.game_date)
+    listed = next((i for i in data_agent.current_injuries(session, team_id, now, slate.game_date)
                    if normalize_name(i["player"]) == name), None)
     if listed is not None:
         out["status"] = {"label": listed["status"], "detail": listed["reason"]}
@@ -350,7 +350,7 @@ def _game_card(session: Session, game: Game, teams: dict[int, dict], cache: dict
     pred = session.execute(
         select(Prediction)
         .where(Prediction.game_id == game.game_id,
-               Prediction.model_version == settings.analysis_model)
+               Prediction.model_version == GAME_MODEL)
         .order_by(Prediction.as_of.desc()).limit(1)
     ).scalar_one_or_none()
     standing = _standing(session, game, cache)
@@ -368,7 +368,6 @@ def _game_card(session: Session, game: Game, teams: dict[int, dict], cache: dict
                  "record": record(game.away_team_id)},
         "model_home_prob": _f(pred.predicted_home_win_prob) if pred else None,
         "market_home_prob": _market_home_prob(session, game.game_id),
-        "reasoning": pred.reasoning if pred else None,
         "key_factors": (pred.context_used or {}).get("key_factors") if pred else None,
     }
 

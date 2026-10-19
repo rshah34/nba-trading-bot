@@ -202,6 +202,66 @@ def _season_for_date(d: date) -> str:
     return f"{start_year}-{str(start_year + 1)[-2:]}"
 
 
+# Injury statuses that bear on whether a player plays (skip healthy/available noise).
+_RELEVANT_INJURY_STATUSES = {"out", "doubtful", "questionable", "day-to-day", "gtd"}
+# One sync writes the whole league report within seconds; rows this close to the
+# newest one belong to the same report.
+_REPORT_BATCH_WINDOW = timedelta(minutes=10)
+
+
+def current_injuries(
+    session: Session, team_id: int, as_of: datetime, game_date: date | None = None,
+) -> list[dict]:
+    """A team's injuries on the most recent report at or before the cutoff.
+
+    Each sync appends the whole league report, and a player who recovers simply stops
+    being listed — so "latest row per player" would keep him injured forever. Only
+    rows from the newest sync count.
+
+    With `game_date`, the status is the one that applies to that game: a player the
+    feed calls day-to-day but doesn't expect back until after it is Out.
+    """
+    latest = session.execute(
+        select(func.max(Injury.reported_at)).where(Injury.reported_at <= as_of)
+    ).scalar_one_or_none()
+    if latest is None:
+        return []
+    rows = session.execute(
+        select(Injury)
+        .where(
+            Injury.team_id == team_id,
+            Injury.reported_at <= latest,
+            Injury.reported_at >= latest - _REPORT_BATCH_WINDOW,
+        )
+        .order_by(Injury.reported_at.desc())
+    ).scalars().all()
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for inj in rows:
+        if inj.player_name in seen:
+            continue
+        seen.add(inj.player_name)
+        if (inj.status or "").lower() in _RELEVANT_INJURY_STATUSES:
+            ruled_out = (game_date is not None and inj.return_date is not None
+                         and inj.return_date > game_date)
+            out.append({"player": inj.player_name, "status": "Out" if ruled_out else inj.status,
+                        "reason": inj.reason, "return_date": inj.return_date})
+    return out
+
+
+def recently_listed(session: Session, team_id: int, as_of: datetime, days: int = 4) -> set[str]:
+    """Everyone a team has had on an injury report in the last few days, whatever
+    his status now. A player who was listed and has since been cleared is coming
+    back, however long he was gone."""
+    return set(session.execute(
+        select(Injury.player_name).where(
+            Injury.team_id == team_id, Injury.reported_at <= as_of,
+            Injury.reported_at >= as_of - timedelta(days=days),
+        ).distinct()
+    ).scalars())
+
+
 def sync_rosters(session: Session) -> int:
     """Replace the stored roster list with the league's current one. A reply that
     doesn't cover every team is refused, so a bad pull never empties a roster."""

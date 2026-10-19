@@ -68,7 +68,6 @@ export interface GameCard {
   away: TeamRef & { score: number | null; record: string | null };
   model_home_prob: number | null;
   market_home_prob: number | null;
-  reasoning: string | null;
   key_factors: string[] | null;
 }
 

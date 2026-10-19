@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     odds_api_key: str = ""
 
-    analysis_model: str = "claude-sonnet-5"
     # Reads the day's news into structured player signals (minutes limits, role
     # changes, absences). Extraction, not judgement, so the small model does it.
     news_model: str = "claude-haiku-5-5"

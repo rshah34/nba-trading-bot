@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from nba_bot import betting
-from nba_bot.agents import analysis_agent, data_agent, news_agent
+from nba_bot.agents import data_agent, news_agent
 from nba_bot.config import my_books, settings
 from nba_bot.data import odds_api
 from nba_bot.data.nba_stats import is_preseason
@@ -262,14 +262,14 @@ def team_view(
     roster = {pid for pid, team in data.current_team.items() if team == team_id and recent(pid)}
     # Someone on the injury report in the last few days is on his way back (or still
     # out, which the next block handles), however long ago he last played.
-    for name in analysis_agent.recently_listed(session, team_id, slate.as_of):
+    for name in data_agent.recently_listed(session, team_id, slate.as_of):
         pid = _resolve_player(data, name, {team_id})
         if pid is not None and data.current_team.get(pid) == team_id:
             roster.add(pid)
 
     out_ids: set[int] = set()
     blocked: dict[int, str] = {}
-    for inj in analysis_agent.current_injuries(session, team_id, slate.as_of, game_date):
+    for inj in data_agent.current_injuries(session, team_id, slate.as_of, game_date):
         pid = _resolve_player(data, inj["player"], {team_id})
         if pid is None:
             continue

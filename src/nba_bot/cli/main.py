@@ -4,10 +4,12 @@ from pathlib import Path
 
 import typer
 from rich import print as rprint
+from sqlalchemy import select
 
 from nba_bot import pipeline
 from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
 from nba_bot.db.engine import SessionLocal, engine
+from nba_bot.db.models import ResearchFinding
 
 app = typer.Typer()
 
@@ -71,12 +73,15 @@ def ingest_news():
 def predict(
     game_date: str = typer.Option("", help="Date to predict (YYYY-MM-DD). Defaults to today."),
 ):
-    """Run the Analysis Agent on all scheduled games for a date → win prob + edge."""
+    """Predict every scheduled game on a date with the game model → win prob + edge."""
+    from nba_bot.features.props import load_props_data
+
     target = date.fromisoformat(game_date) if game_date else date.today()
     with SessionLocal() as session:
-        preds = analysis_agent.run_predictions(session, target)
+        preds = analysis_agent.run_predictions(session, target, data=load_props_data(session))
     if not preds:
-        rprint(f"[yellow]No scheduled games found for {target}.[/yellow]")
+        rprint(f"[yellow]Nothing to predict on {target} (no games, or a team under "
+               f"10 games played).[/yellow]")
         return
     for p in preds:
         edge = (p.context_used or {}).get("edge_vs_market")
@@ -85,7 +90,7 @@ def predict(
             f"[bold]{p.game_id}[/bold]  home win [cyan]{float(p.predicted_home_win_prob):.1%}[/cyan] "
             f"(margin {float(p.predicted_spread):+.1f})  {edge_str}"
         )
-        rprint(f"       [dim]{p.reasoning}[/dim]")
+        rprint(f"       [dim]{p.context_used['key_factors'][0]}[/dim]")
 
 
 def _run_logged(name: str, fn) -> None:
@@ -113,99 +118,68 @@ def daily_close():
 @app.command()
 def backtest(
     season: str = typer.Option("2025-26", help="Season to replay, e.g. 2025-26."),
-    limit: int = typer.Option(30, help="Number of games in the slice."),
-    model: str = typer.Option("claude-haiku-4-5", help="Claude model for predictions."),
-    season_slice: str = typer.Option("start", "--slice", help="Part of season: start|mid|end."),
-    tag: str = typer.Option("", "--tag", help="Label this run (e.g. v1/v2) so reports don't mix."),
-    concurrency: int = typer.Option(8, help="Parallel prediction workers (each its own DB session)."),
-    run: bool = typer.Option(False, "--run", help="Actually spend API credits (default: estimate only)."),
 ):
-    """Replay a season's games through Analysis + Evaluation. Estimates cost first."""
-    import anthropic
-
-    from nba_bot.backtest import loader, runner
-    from nba_bot.config import settings
+    """Score the game-winner model on a full season. Free — no API calls."""
+    from nba_bot.backtest import game_backtest
+    from nba_bot.features.props import load_props_data
 
     with SessionLocal() as session:
-        if not runner._backtest_games(session, season, 1, "start"):
-            rprint(f"[cyan]Loading {season}...[/cyan]")
-            rprint("  ", loader.load_season(session, season))
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        games = runner._backtest_games(session, season, limit, season_slice)
-        est = runner.estimate_cost(session, games, model, client)
-        window = f"{games[0].game_date} → {games[-1].game_date}" if games else "—"
-        rprint(
-            f"[cyan]Estimate:[/cyan] {est['games']} games ([bold]{season_slice}[/bold] slice, {window}) "
-            f"× ~{est.get('input_tokens_each', 0)} input tokens → ~[bold]${est['est_usd']}[/bold] on {model}"
-        )
-        if not run:
-            rprint("[yellow]Dry run — re-run with --run to execute (spends credits).[/yellow]")
-            return
-
-        rprint(f"[cyan]Running {len(games)} predictions...[/cyan]")
-        rep = runner.predict_and_evaluate(
-            session, games, model, runner.model_version_for(season, model, season_slice, tag),
-            client=client, concurrency=concurrency,
-        )
-        rprint("\n[green bold]=== Backtest report ===[/green bold]")
-        if rep.get("failed"):
-            rprint(f"[yellow]{rep['failed']} game(s) failed and were skipped.[/yellow]")
-        rprint(f"games: {rep['n']}  winner accuracy: {rep['winner_accuracy']}  "
-               f"Brier: {rep['mean_brier']}  log-loss: {rep['mean_log_loss']}")
-        rprint(f"actual home win rate: {rep['home_win_rate_actual']}  "
-               f"confident picks: {rep['accuracy_confident_picks']}")
-        rprint("[bold]calibration (predicted vs actual):[/bold]")
-        for b in rep["calibration"]:
-            rprint(f"  {b['bin']}  n={b['n']:>3}  predicted={b['avg_predicted']}  "
-                   f"actual={b['actual_win_rate']}")
+        rows = game_backtest.predictions(load_props_data(session), season)
+    for label, subset in (("every game", rows),
+                          ("games the model bets (both teams 10+ games in)",
+                           [r for r in rows if r[2]])):
+        rep = game_backtest.score(subset)
+        if not rep["n"]:
+            continue
+        rprint(f"[bold]{season}, {label}[/bold]: n={rep['n']}  Brier {rep['brier']}  "
+               f"log-loss {rep['log_loss']}  winner accuracy {rep['accuracy']}")
+    rprint("[bold]calibration (predicted vs actual), every game:[/bold]")
+    for b in game_backtest.score(rows)["calibration"]:
+        rprint(f"  {b['bin']}  n={b['n']:>4}  predicted={b['avg_predicted']}  "
+               f"actual={b['actual_win_rate']}")
 
 
 @app.command()
-def calibrate(
-    model_version: str = typer.Option(..., help="Model version whose resolved predictions to fit on."),
-    k: int = typer.Option(5, help="Cross-validation folds for the honest out-of-sample read."),
-    save: bool = typer.Option(False, "--save", help="Persist the fitted params so live betting applies them."),
+def research(
+    focus: str = typer.Option("", help="What to look into, e.g. 'rest and travel'. Default: anything."),
+    budget: float = typer.Option(2.0, help="Dollar cap for this run's Claude calls."),
 ):
-    """Fit Platt calibration on a model's resolved predictions and report the
-    cross-validated (out-of-sample) Brier / log-loss improvement."""
-    from sqlalchemy import select
-
-    from nba_bot.agents import betting_agent
-    from nba_bot.db.models import Game, Prediction
-    from nba_bot.features import calibration
+    """Let the research agent look for where the prop projections go wrong. Each fix
+    it believes in is scored once on the held-back season; passing ones are proposals
+    to apply by hand."""
+    from nba_bot.features.props import load_props_data
+    from nba_bot.research import agent, table
 
     with SessionLocal() as session:
-        rows = session.execute(
-            select(Prediction.predicted_home_win_prob, Game.home_score, Game.away_score)
-            .join(Game, Prediction.game_id == Game.game_id)
-            .where(
-                Prediction.model_version == model_version,
-                Game.status == "final",
-                Game.home_score.is_not(None),
-            )
-        ).all()
+        rprint("[cyan]Building the research table (about 30 seconds)...[/cyan]")
+        df = table.build(load_props_data(session))
+        run = agent.run_research(session, df, focus=focus or None, budget=budget,
+                                 say=lambda line: rprint(f"  [dim]{line}[/dim]"))
+        findings = session.execute(
+            select(ResearchFinding).where(ResearchFinding.run_id == run.id)
+        ).scalars().all()
+    rprint(f"\n[bold]Run {run.id}[/bold]: {run.status}, {run.turns} turns, ${float(run.cost_usd):.2f}")
+    if run.summary:
+        rprint(run.summary)
+    for f in findings:
+        color = "green" if f.verdict == "pass" else "yellow"
+        rprint(f"  [{color}]{f.verdict.upper()}[/{color}] #{f.id} {f.hypothesis} "
+               f"({f.stat} x{float(f.multiplier):g})")
 
-    if len(rows) < 2 * k:
-        rprint(f"[yellow]Only {len(rows)} resolved predictions for '{model_version}' — need more to fit.[/yellow]")
-        return
 
-    raw = [float(p) for p, _, _ in rows]
-    outcomes = [1 if hs > as_ else 0 for _, hs, as_ in rows]
+@app.command()
+def research_applied(finding_id: int = typer.Argument(..., help="The finding put into the model.")):
+    """Mark a research finding as applied to the projection model."""
+    from datetime import datetime, timezone
 
-    cv = calibration.cross_val_metrics(raw, outcomes, k=k)
-    params = calibration.fit_platt(raw, outcomes)  # final params on all data
-
-    rprint(f"[bold]Calibration for[/bold] {model_version}  (n={cv['n']}, {k}-fold CV)")
-    rprint(f"  Brier    raw {cv['raw_brier']} → calibrated [cyan]{cv['cal_brier']}[/cyan]")
-    rprint(f"  log-loss raw {cv['raw_log_loss']} → calibrated [cyan]{cv['cal_log_loss']}[/cyan]")
-    better = cv["cal_brier"] < cv["raw_brier"] and cv["cal_log_loss"] <= cv["raw_log_loss"]
-    rprint(f"  fitted params: a={params.a:.3f} (a<1 shrinks toward 0.5), b={params.b:+.3f}")
-    rprint("[green]Calibration helps out-of-sample.[/green]" if better
-           else "[yellow]No out-of-sample gain — model is already ~calibrated on this data.[/yellow]")
-    if save:
-        with SessionLocal() as session:
-            betting_agent.save_calibration(session, model_version, params)
-        rprint(f"[green]Saved calibration for {model_version} — live betting will apply it.[/green]")
+    with SessionLocal() as session:
+        f = session.get(ResearchFinding, finding_id)
+        if f is None:
+            rprint(f"[red]No finding {finding_id}.[/red]")
+            raise typer.Exit(1)
+        f.applied_at = datetime.now(timezone.utc)
+        session.commit()
+    rprint(f"[green]Finding {finding_id} marked applied.[/green]")
 
 
 @app.command()

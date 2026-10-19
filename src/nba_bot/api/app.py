@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from nba_bot.api import schemas, views
 from nba_bot.backtest.report import build_report
-from nba_bot.config import settings
 from nba_bot.db.engine import SessionLocal
+from nba_bot.features.games import GAME_MODEL
 
 app = FastAPI(
     title="NBA Trading Bot API",
@@ -130,4 +130,4 @@ def picks(session: Session = Depends(get_session)) -> dict:
 def game_model(session: Session = Depends(get_session)) -> schemas.BacktestReport:
     """How the game model now in use has done on the games it predicted live:
     accuracy, Brier, log-loss and calibration. Empty until its first games are graded."""
-    return schemas.BacktestReport(**build_report(session, settings.analysis_model))
+    return schemas.BacktestReport(**build_report(session, GAME_MODEL))

@@ -1,10 +1,9 @@
 """Betting agent: the DB-touching orchestration around the pure `betting` math.
 
-Pre-tip it proposes a sized paper bet for each game where the calibrated model
+Pre-tip it proposes a sized paper bet for each game where the game model's
 probability disagrees enough with the market (which of those get recorded is the
 daily picks' call — see `picks.py`). After games resolve it settles each
-bet with CLV (vs. the closing line) and P&L. Calibration params (if fitted) are
-applied to the raw probability first, so edge and sizing use honest numbers.
+bet with CLV (vs. the closing line) and P&L.
 """
 
 from __future__ import annotations
@@ -17,9 +16,9 @@ from sqlalchemy.orm import Session
 
 from nba_bot import betting
 from nba_bot.betting import decide_bet_decimal, simulate_paper_trade
-from nba_bot.config import my_books, settings
-from nba_bot.db.models import Bet, CalibrationParams, Game, Odds, Prediction
-from nba_bot.features.calibration import PlattParams, apply_platt
+from nba_bot.config import my_books
+from nba_bot.db.models import Bet, Game, Odds, Prediction
+from nba_bot.features.games import GAME_MODEL
 
 
 def _latest_moneylines(odds_rows: list[Odds], closing_only: bool = False) -> dict[str, tuple[float, float]]:
@@ -64,25 +63,6 @@ def best_prices(odds_rows: list[Odds], books: frozenset[str]) -> dict[str, tuple
     return out
 
 
-def load_calibration(session: Session, model_version: str) -> PlattParams | None:
-    row = session.get(CalibrationParams, model_version)
-    return PlattParams(a=float(row.a), b=float(row.b), n=row.n) if row else None
-
-
-def save_calibration(session: Session, model_version: str, params: PlattParams) -> None:
-    session.execute(
-        pg_insert(CalibrationParams)
-        .values(model_version=model_version, a=params.a, b=params.b, n=params.n,
-                fitted_at=datetime.now(timezone.utc))
-        .on_conflict_do_update(
-            index_elements=[CalibrationParams.model_version],
-            set_={"a": params.a, "b": params.b, "n": params.n,
-                  "fitted_at": datetime.now(timezone.utc)},
-        )
-    )
-    session.commit()
-
-
 def game_candidates(
     session: Session,
     game_date: date,
@@ -97,19 +77,18 @@ def game_candidates(
 ) -> list[dict]:
     """Game-winner bets worth making right now, best edge first. Nothing is recorded.
 
-    For each predicted game that hasn't tipped and isn't already bet: calibrate the
-    model's probability, blend it toward the current market, and keep it if the edge
-    clears the threshold. The market is every book's consensus; the bet is priced
+    For each predicted game that hasn't tipped and isn't already bet: blend the
+    model's probability toward the current market, and keep it if the edge clears
+    the threshold. The market is every book's consensus; the bet is priced
     at the best of your own books (`MY_BOOKS`), and skipped if none has a playable
     price.
 
     The blend leans on the market three to one: game lines are the sharpest market
-    there is, and this model tested at roughly a coin flip against them. So a game
+    there is, and the market sees everything this model does and more. So a game
     only qualifies when the model disagrees with the price by 10 to 25 points — less
     is noise, more means the model is missing something.
     """
-    model_version = model_version or settings.analysis_model
-    params = load_calibration(session, model_version)
+    model_version = model_version or GAME_MODEL
     already = set(session.execute(
         select(Bet.game_id).where(Bet.model_version == model_version)
     ).scalars())
@@ -133,9 +112,8 @@ def game_candidates(
         cons = consensus_decimal_odds(odds_rows)
         if cons is None:
             continue  # no market to bet into
-        raw = float(pred.predicted_home_win_prob)
         d = decide_bet_decimal(
-            apply_platt(raw, params) if params else raw, cons[0], cons[1],
+            float(pred.predicted_home_win_prob), cons[0], cons[1],
             prices=best_prices(odds_rows, my_books()),
             market_weight=market_weight, min_edge=min_edge, max_edge=max_edge,
             kelly_multiplier=kelly_multiplier, max_stake=max_stake,

@@ -9,17 +9,17 @@ best bets, and scores itself against closing lines.
 - **Ingests structured data** — schedules, scores, rest/back-to-backs, team & player
   box scores and the league's current rosters (`nba_api`), injury reports (ESPN), and live betting odds across
   sportsbooks (The Odds API).
-- **Predicts with an LLM agent** — for each game, Claude reasons over point-in-time
-  stats, injuries, key-player production, and the strongest news reports to output a calibrated
-  win probability + predicted margin. It is blind to the betting line, so the
-  estimate is independent.
+- **Predicts game winners** — a plain statistical model: each team's point margin this
+  season, home court, and the scoring each side is missing tonight (from the injury
+  report and the news). Blind to the betting line, so the estimate is independent. It
+  replaced a Claude analyst after a head-to-head on the same 300 games: Brier 0.225
+  against Claude's 0.243, and 0.200 over the full 2025-26 season it was never fit on.
 - **Finds edge** — the model's probability is compared to the **de-vigged** market
   consensus to compute the disagreement (edge).
 - **Scores itself** — after games resolve, an evaluation agent computes Brier score,
   log-loss, pick accuracy, calibration, and **closing-line value (CLV)**.
-- **Backtests** — replays a completed season point-in-time through the identical
-  Analysis → Evaluation path, with a cost estimate before spending and a calibration
-  report after.
+- **Backtests** — replays a completed season point-in-time for both models, free:
+  accuracy, Brier, log-loss and a calibration table.
 - **Prices player props** — a statistical projection for every player stat (points,
   rebounds, assists, threes, steals, blocks, turnovers and the combos) as a full
   distribution: minutes × per-minute rate × opponent × a team **minutes budget** and
@@ -61,7 +61,7 @@ best bets, and scores itself against closing lines.
    ┌──────────────┐          ┌──────────────┐      ┌──────────────────┐
    │  DATA AGENT  │          │   ANALYSIS   │      │ EVALUATION AGENT │
    │ ingest games │          │    AGENT     │      │ Brier · log-loss │
-   │ odds · news  │          │ blind win-   │─────▶│ CLV · calibration│
+   │ odds · news  │          │ margin model │─────▶│ CLV · calibration│
    │ box/player   │          │ prob + edge  │      │ (after games)    │
    └──────────────┘          └──────────────┘      └──────────────────┘
           │                         │                      │
@@ -140,6 +140,5 @@ reports, and the picks with their record. See [dashboard/README.md](dashboard/RE
 ```bash
 # First time on a past season: load it, then fetch its box scores (one call per game).
 nba-bot backfill-box-scores --season 2025-26
-# Estimates cost first; add --run to actually spend. --slice start|mid|end, --tag labels the run.
-nba-bot backtest --season 2025-26 --limit 100 --model claude-haiku-4-5 --slice mid --run
+nba-bot backtest --season 2025-26        # the game-winner model, free
 ```

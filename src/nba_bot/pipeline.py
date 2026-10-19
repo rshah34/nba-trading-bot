@@ -121,8 +121,8 @@ def run_daily(session: Session, on: date | None = None) -> dict:
     steps |= {
         "signals": _step(
             session, "news-signals", lambda: news_agent.extract_signals(session, team_ids=teams)),
-        "predict": _step(
-            session, "predict", lambda: [p.game_id for p in analysis_agent.run_predictions(session, on)]),
+        "predict": _step(session, "predict", lambda: [
+            p.game_id for p in analysis_agent.run_predictions(session, on, data=data)]),
         # Prices last, so they are as fresh as they can be when the picks are made.
         "odds": _step(session, "ingest-odds", lambda: data_agent.sync_odds(session)),
         "prop_odds": _step(session, "prop-odds", lambda: props_agent.sync_prop_odds(session, data=data)),

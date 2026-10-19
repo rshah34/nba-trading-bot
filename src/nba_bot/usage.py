@@ -17,7 +17,8 @@ log = logging.getLogger("nba_bot.usage")
 
 LOG_PATH = Path("logs") / "api-usage.jsonl"
 
-# $ per million tokens (input, output). Output includes thinking tokens.
+# $ per million tokens (input, output). Output includes thinking tokens. Cache writes
+# (5-minute) bill at 1.25x input and cache reads at 0.1x.
 PRICING: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
@@ -28,35 +29,41 @@ PRICING: dict[str, tuple[float, float]] = {
 }
 
 
-def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """Dollar cost of one call, or None for a model with no known price."""
+def cost_usd(model: str, input_tokens: int, output_tokens: int,
+             cache_write: int = 0, cache_read: int = 0) -> float | None:
+    """Dollar cost of one call, or None for a model with no known price.
+    `input_tokens` is the uncached input only."""
     price = PRICING.get(model)
     if price is None:
         return None
-    return (input_tokens * price[0] + output_tokens * price[1]) / 1_000_000
+    inp = input_tokens + 1.25 * cache_write + 0.1 * cache_read
+    return (inp * price[0] + output_tokens * price[1]) / 1_000_000
 
 
-def record(kind: str, model: str, response, path: Path | None = None) -> None:
-    """Append one call's usage. `kind` names the caller: 'game' or 'news'."""
+def record(kind: str, model: str, response, path: Path | None = None) -> float | None:
+    """Append one call's usage and return its cost. `kind` names the caller:
+    'news' or 'research'."""
     try:
         u = response.usage
-        # Cache reads/writes are billed too; fold them in so nothing is undercounted.
-        input_tokens = (u.input_tokens + (getattr(u, "cache_read_input_tokens", 0) or 0)
-                        + (getattr(u, "cache_creation_input_tokens", 0) or 0))
+        write = getattr(u, "cache_creation_input_tokens", 0) or 0
+        read = getattr(u, "cache_read_input_tokens", 0) or 0
+        usd = cost_usd(model, u.input_tokens, u.output_tokens, write, read)
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
             "model": model,
-            "input_tokens": input_tokens,
+            "input_tokens": u.input_tokens + write + read,
             "output_tokens": u.output_tokens,
-            "usd": cost_usd(model, input_tokens, u.output_tokens),
+            "usd": usd,
         }
         path = path or LOG_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:
             f.write(json.dumps(entry) + "\n")
+        return usd
     except Exception as exc:  # noqa: BLE001
         log.warning("could not record API usage: %s", exc)
+        return None
 
 
 def summarize(days: int = 30, path: Path | None = None) -> dict:
