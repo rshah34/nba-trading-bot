@@ -125,7 +125,7 @@ def parse_event(event: dict) -> OddsEvent:
 
 # --------------------------------------------------------------------------- #
 # Player props. Not in the bulk feed — one request per event, and each request
-# costs one credit per market returned. A full 12-market slate is ~12 credits a
+# costs one credit per market returned. A full 11-market slate is ~11 credits a
 # game, so the free tier's 500/month covers one market a night.
 # --------------------------------------------------------------------------- #
 @dataclass

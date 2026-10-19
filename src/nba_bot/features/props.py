@@ -60,7 +60,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from nba_bot.data.nba_stats import is_preseason
-from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
+from nba_bot.db.models import Game, PlayerGameStats, RosterSpot, TeamGameStats
 
 BASE_STATS = ("pts", "reb", "ast", "stl", "blk", "fg3m", "tov")
 # Shot counts ride along for fantasy scoring; they are not projected on their own.
@@ -637,7 +637,7 @@ class PropsData:
 
     logs: dict[int, list[GameLine]]                 # player -> chronological real games played
     names: dict[int, str]
-    current_team: dict[int, int]                    # latest team, preseason included
+    current_team: dict[int, int]                    # team today; absent = on no roster
     last_seen: dict[int, date]                      # latest appearance, preseason included
     team_games: dict[int, list[GameInfo]]           # team -> chronological real games
     team_box: dict[tuple[str, int], dict[str, float]]  # (game, team) -> stat totals
@@ -784,8 +784,7 @@ def load_props_data(session: Session) -> PropsData:
         minutes = float(r.minutes or 0)
         if minutes <= 0:
             continue
-        # Preseason says where a player is *now* (116 changed teams this offseason),
-        # but its minutes and usage are exhibition noise, so it never enters a log.
+        # Preseason minutes and usage are exhibition noise, so they never enter a log.
         if r.player_id not in latest or g.game_date >= latest[r.player_id][0]:
             latest[r.player_id] = (g.game_date, r.team_id)
         if is_preseason(r.game_id):
@@ -804,10 +803,15 @@ def load_props_data(session: Session) -> PropsData:
     for log in logs.values():
         log.sort(key=lambda g: (g.game_date, g.game_id))
 
+    # Who is on a team today comes from the league's roster list, so a trade, signing
+    # or waiver counts the day it is official; box scores only say where a player
+    # last played.
+    roster = dict(session.execute(select(RosterSpot.player_id, RosterSpot.team_id)).all())
+
     return PropsData(
         logs=dict(logs),
         names=names,
-        current_team={pid: team for pid, (_d, team) in latest.items()},
+        current_team={pid: roster[pid] for pid in latest if pid in roster},
         last_seen={pid: seen for pid, (seen, _team) in latest.items()},
         team_games=dict(team_games),
         team_box=team_box,

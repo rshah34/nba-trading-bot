@@ -121,14 +121,16 @@ def recheck(
     session: Session, game_date: date, *, data: PropsData | None = None,
     as_of: datetime | None = None,
 ) -> list[str]:
-    """Re-read today's open picks against the newest injury report and return an
-    update line for each one the news has undercut. Each pick is flagged once.
+    """Re-read today's open picks against the newest rosters and injury report and
+    return an update line for each one the news has undercut. Each pick is flagged
+    once.
 
     A prop is re-projected with the rotation as it now stands: it is a PASS if the
-    player is out or in doubt, or if the bet is no longer worth its price. A game
-    pick gets a HEADS UP when a regular on the team we backed is newly out, or one
-    is back for the other side — the game model isn't re-run, so that is news, not
-    a verdict. Stale availability was the one input that tested worse than none.
+    player has left the team, is out or in doubt, or if the bet is no longer worth
+    its price. A game pick gets a HEADS UP when a regular on the team we backed is
+    newly out, or one is back for the other side — the game model isn't re-run, so
+    that is news, not a verdict. Stale availability was the one input that tested
+    worse than none.
     """
     as_of = as_of or datetime.now(timezone.utc)
     data = data or load_props_data(session)
@@ -158,7 +160,9 @@ def recheck(
             view = views[(game.game_id, bet.team_id)] = props_agent.team_view(
                 session, data, slate, bet.team_id, opp, home)
 
-        if bet.player_id in view.out:
+        if data.current_team.get(bet.player_id) != bet.team_id:
+            why = "he is no longer on the team"
+        elif bet.player_id in view.out:
             why = "he is now out, so the bet will void"
         elif bet.player_id in view.blocked:
             why = f"he is now {view.blocked[bet.player_id]}"

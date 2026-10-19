@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     news_model: str = "claude-haiku-5-5"
 
     # Player props. Each market costs one Odds API credit per game per snapshot.
+    # Turnovers are left out: the NBA has had books stop offering them since 2025.
     prop_markets: str = (
         "player_points,player_rebounds,player_assists,player_threes,"
         "player_points_rebounds_assists,player_points_rebounds,player_points_assists,"
-        "player_rebounds_assists,player_steals,player_blocks,player_blocks_steals,"
-        "player_turnovers"
+        "player_rebounds_assists,player_steals,player_blocks,player_blocks_steals"
     )
     # Stop buying prop snapshots once the Odds API quota falls to this many credits,
     # so game lines (the CLV record) never get starved.

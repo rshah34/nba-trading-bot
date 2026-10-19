@@ -10,8 +10,8 @@ runs make up the day:
           Late on purpose: props are won on knowing who plays, which firms up
           through the day, and the recorded price is the one on offer when the
           text goes out.
-* close — near tip: re-read the injury report and text an update if it undercuts
-          a pick, then re-capture game lines and the prop markets we hold, which
+* close — near tip: re-read the rosters and the injury report and text an update
+          if they undercut a pick, then re-capture game lines and the prop markets we hold, which
           become the closing prices CLV is measured against.
 """
 
@@ -95,6 +95,8 @@ def run_daily(session: Session, on: date | None = None) -> dict:
         # Finals and box scores for the games since the last run, tonight's schedule,
         # and the current injury report.
         "ingest": _step(session, "ingest", lambda: data_agent.run_nightly(session)),
+        # Who is on each team today: trades, signings and waivers since yesterday.
+        "rosters": _step(session, "rosters", lambda: data_agent.sync_rosters(session)),
         # The rest of the season's fixtures: the league adds and moves games as it goes.
         "schedule": _step(session, "schedule", lambda: data_agent.sync_schedule(session)),
         "mark_closing": _step(session, "mark-closing", lambda: data_agent.mark_closing_lines(session)),
@@ -156,6 +158,7 @@ def run_close(session: Session, on: date | None = None) -> dict:
         return {"updates": updates, "text": sent}
 
     return {
+        "rosters": _step(session, "rosters", lambda: data_agent.sync_rosters(session)),
         "injuries": _step(session, "injuries", lambda: data_agent.sync_injuries(session)),
         "recheck": _step(session, "recheck", recheck),
         "odds": _step(session, "ingest-odds", lambda: _game_odds(session, on)),

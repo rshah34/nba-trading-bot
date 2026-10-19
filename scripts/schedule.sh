@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# Install / remove the launchd jobs that run the daily pipeline unattended.
-# Renders the plist templates with this repo's absolute path (so nothing
+# Install / remove the launchd job that runs the daily pipeline unattended.
+# Renders the plist template with this repo's absolute path (so nothing
 # machine-specific is committed) into ~/Library/LaunchAgents and loads them.
 #
-#   scripts/schedule.sh install     # replace whatever is installed with the current jobs
+#   scripts/schedule.sh install     # replace whatever is installed with the current job
 #   scripts/schedule.sh uninstall   # unload + remove every job
-#   scripts/schedule.sh status      # show whether they're loaded
+#   scripts/schedule.sh status      # show whether it's loaded, and the last runs
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTS="$HOME/Library/LaunchAgents"
-JOBS=(com.nba-bot.daily com.nba-bot.close)
+JOBS=(com.nba-bot.runner)
 ACTION="${1:-status}"
 
 # Unload and delete every nba-bot job that is installed, whatever set it came from.
@@ -35,13 +35,18 @@ case "$ACTION" in
       launchctl load -w "$dest"
       echo "loaded $job  ($dest)"
     done
-    echo "Done. Edit the Hour in each plist for your timezone, then re-run 'install'."
+    # Nothing is owed from before the install: a job's first run is its next time.
+    for name in daily close; do
+      [ -e "$REPO/logs/.last-$name" ] || date +%s > "$REPO/logs/.last-$name"
+    done
+    echo "Done. Runs at 14:30 (daily) and 15:30 + 18:30 (close), Pacific time."
     ;;
   uninstall)
     remove_all
     ;;
   status)
     launchctl list | grep -E "nba-bot" || echo "no nba-bot jobs loaded"
+    tail -3 "$REPO/logs/pipeline-runs.jsonl" 2>/dev/null || true
     ;;
   *)
     echo "usage: scripts/schedule.sh {install|uninstall|status}" >&2

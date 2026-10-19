@@ -12,6 +12,7 @@ from datetime import date, datetime
 import pandas as pd
 from nba_api.stats.endpoints import (
     boxscoretraditionalv3,
+    commonallplayers,
     leaguegamefinder,
     scheduleleaguev2,
     scoreboardv3,
@@ -100,6 +101,17 @@ def get_schedule(season: str) -> pd.DataFrame:
         "tipoff_at": df["gameDateTimeUTC"].map(_parse_utc),
         "final": df["gameStatus"].astype(int) == 3,
     })
+
+
+@_retry
+def get_rosters(season: str) -> pd.DataFrame:
+    """Every player on an NBA roster today and his team, in one request. Updated by
+    the league as trades, signings and waivers become official."""
+    df = commonallplayers.CommonAllPlayers(
+        is_only_current_season=1, season=season, league_id="00").get_data_frames()[0]
+    df = df[df["TEAM_ID"].astype(int) != 0]
+    return pd.DataFrame({"player_id": df["PERSON_ID"].astype(int),
+                         "team_id": df["TEAM_ID"].astype(int)})
 
 
 @_retry

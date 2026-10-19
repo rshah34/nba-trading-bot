@@ -110,6 +110,15 @@ class PlayerGameStats(Base):
     plus_minus: Mapped[float | None] = mapped_column(Numeric, nullable=True)
 
 
+class RosterSpot(Base):
+    """One player on the league's current roster list."""
+
+    __tablename__ = "rosters"
+
+    player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.team_id"), nullable=False)
+
+
 class Injury(Base):
     __tablename__ = "injuries"
 

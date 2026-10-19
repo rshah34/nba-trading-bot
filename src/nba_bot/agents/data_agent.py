@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,15 @@ from nba_bot.data import injuries as injuries_client
 from nba_bot.data import nba_stats
 from nba_bot.data import odds_api
 from nba_bot.data.team_lookup import resolve_team_id
-from nba_bot.db.models import Game, Injury, Odds, PlayerGameStats, Team, TeamGameStats
+from nba_bot.db.models import (
+    Game,
+    Injury,
+    Odds,
+    PlayerGameStats,
+    RosterSpot,
+    Team,
+    TeamGameStats,
+)
 
 # Conference + division per team abbreviation. Static (realignment is rare) and not
 # provided by nba_api's static team list, so it's maintained here.
@@ -192,6 +200,21 @@ def _season_for_date(d: date) -> str:
     # NBA season labeled by its starting year; season flips in October.
     start_year = d.year if d.month >= 10 else d.year - 1
     return f"{start_year}-{str(start_year + 1)[-2:]}"
+
+
+def sync_rosters(session: Session) -> int:
+    """Replace the stored roster list with the league's current one. A reply that
+    doesn't cover every team is refused, so a bad pull never empties a roster."""
+    rosters = nba_stats.get_rosters(_season_for_date(date.today()))
+    known = set(session.execute(select(Team.team_id)).scalars())
+    rosters = rosters[rosters["team_id"].isin(known)]
+    if rosters["team_id"].nunique() < len(known):
+        raise ValueError(f"roster list covers {rosters['team_id'].nunique()} of {len(known)} teams")
+    session.execute(delete(RosterSpot))
+    session.add_all(RosterSpot(player_id=int(r.player_id), team_id=int(r.team_id))
+                    for r in rosters.itertuples())
+    session.commit()
+    return len(rosters)
 
 
 def sync_injuries(session: Session) -> int:

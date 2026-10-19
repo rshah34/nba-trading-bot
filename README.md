@@ -7,7 +7,7 @@ best bets, and scores itself against closing lines.
 ## What it does
 
 - **Ingests structured data** — schedules, scores, rest/back-to-backs, team & player
-  box scores (`nba_api`), injury reports (ESPN), and live betting odds across
+  box scores and the league's current rosters (`nba_api`), injury reports (ESPN), and live betting odds across
   sportsbooks (The Odds API).
 - **Predicts with an LLM agent** — for each game, Claude reasons over point-in-time
   stats, injuries, key-player production, and the strongest news reports to output a calibrated
@@ -99,8 +99,8 @@ All commands run via `uv run nba-bot <command>`.
 
 ### Daily operation (in season)
 ```bash
-nba-bot daily            # settle finished games → injuries + news → predict → current odds → 2–3 picks → text them
-nba-bot daily-close      # near tip: re-check injuries (text if a pick is undercut) + the closing prices CLV is measured against
+nba-bot daily            # settle finished games → rosters + injuries + news → predict → current odds → 2–3 picks → text them
+nba-bot daily-close      # near tip: re-check rosters + injuries (text if a pick is undercut) + the closing prices CLV is measured against
 ```
 `scripts/schedule.sh install` runs these on a timer — see [scripts/SCHEDULING.md](scripts/SCHEDULING.md),
 which also covers setting up the texts.

@@ -45,6 +45,7 @@ def _stub_agents(monkeypatch, teams):
     monkeypatch.setattr(pipeline, "load_props_data", rec("load"))
     for agent, fn, result in [
         (pipeline.data_agent, "run_nightly", {}),
+        (pipeline.data_agent, "sync_rosters", 0),
         (pipeline.data_agent, "sync_schedule", 0),
         (pipeline.data_agent, "mark_closing_lines", 0),
         (pipeline.evaluation_agent, "run_evaluation", {}),
@@ -69,7 +70,7 @@ def test_run_daily_settles_before_it_prices_and_texts_last(monkeypatch):
 
     assert all(pipeline.summarize_run(result).values())
     assert calls == [
-        "run_nightly", "sync_schedule", "mark_closing_lines", "run_evaluation", "settle_bets",
+        "run_nightly", "sync_rosters", "sync_schedule", "mark_closing_lines", "run_evaluation", "settle_bets",
         "settle_prop_bets", "sync_news", "load", "extract_signals", "run_predictions",
         "sync_odds", "sync_prop_odds", "make_picks", "best_bets", "send",
     ]

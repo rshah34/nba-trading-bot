@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nba-bot.runner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/scripts/run_due.sh</string>
+    </array>
+    <!-- Every hour at :30. run_due.sh decides what, if anything, is due, on Pacific
+         time whatever timezone the Mac is in, so nothing here changes when you travel.
+         A wake after missed hours fires this once, and the script catches up. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/launchd.runner.out</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/launchd.runner.err</string>
+</dict>
+</plist>

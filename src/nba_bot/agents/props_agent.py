@@ -246,17 +246,18 @@ def team_view(
     and their rest, venue and margin say nothing about a player's role."""
     game_date = slate.game_date
     window = game_date - _ROSTER_WINDOW
-    # Once the team has played this season, its roster is who has suited up in games
-    # that count. Before that, preseason is the only read on who is on the team — and
-    # it is full of camp invitees, so the budgets below wait for a real game.
+    # The roster is the league's list. Once the team has played a game that counts,
+    # only those who have played one lately are projected, so a healthy scratch takes
+    # no one's minutes; before that, many regulars sit out preseason, so everyone on
+    # the list is, and the budgets below wait for a real game.
     form = slate.form.get(team_id)
     settled = form is not None and bool(form.dates)
 
     def recent(pid: int) -> bool:
         if not settled:
-            return data.last_seen[pid] >= window
+            return True
         log = data.log_before(pid, game_date)
-        return bool(log) and log[-1].team_id == team_id and log[-1].game_date >= window
+        return bool(log) and log[-1].game_date >= window
 
     roster = {pid for pid, team in data.current_team.items() if team == team_id and recent(pid)}
     # Someone on the injury report in the last few days is on his way back (or still

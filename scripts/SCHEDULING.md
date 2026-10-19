@@ -4,8 +4,8 @@ Two commands. Every step inside a run is fault-isolated (a flaky API call is log
 
 | Run | Command | What it does |
 |-----|---------|--------------|
-| daily | `nba-bot daily` | final scores + box scores → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
-| close | `nba-bot daily-close` | re-read the injury report and text an update if it undercuts a pick; re-capture game lines + the prop markets we hold → these become the **closing prices** |
+| daily | `nba-bot daily` | final scores + box scores + today's rosters → **settle** yesterday's bets (CLV + P&L) → injuries + news → player signals → Claude predicts each game → current game + prop odds → **choose the day's 2–3 picks** → **text them** |
+| close | `nba-bot daily-close` | re-read the rosters and injury report and text an update if they undercut a pick; re-capture game lines + the prop markets we hold → these become the **closing prices** |
 
 ## Why local (not cloud)
 
@@ -14,14 +14,14 @@ Two commands. Every step inside a run is fault-isolated (a flaky API call is log
 ## Install (macOS, launchd)
 
 ```bash
-scripts/schedule.sh install     # renders the plist templates with this repo's path and loads them
-scripts/schedule.sh status      # confirm they're loaded
-scripts/schedule.sh uninstall   # stop + remove them
+scripts/schedule.sh install     # renders the plist template with this repo's path and loads it
+scripts/schedule.sh status      # confirm it's loaded, and show the last runs
+scripts/schedule.sh uninstall   # stop + remove it
 ```
 
-Two jobs, at **local machine time** (defaults assume a **Pacific** machine):
+One launchd job calls `scripts/run_due.sh` every hour at :30, and the script runs whatever is due. The times are **Pacific, whatever timezone the Mac is set to**: they follow the tip-offs, not the laptop, so travelling changes nothing.
 
-| Job | Default (PT) | Runs | Why then |
+| Job | Time (PT) | Runs | Why then |
 |-----|--------------|------|----------|
 | daily | 14:30 | `daily` | ~90 min before the first evening tips; **the best-bets text** |
 | close | 15:30 and 18:30 | `daily-close` | before the eastern and the western tips — the closing prices |
@@ -30,15 +30,17 @@ Two jobs, at **local machine time** (defaults assume a **Pacific** machine):
 
 **The picks.** Each day the bot records and texts at most `MAX_DAILY_BETS` bets (default 3), chosen across game winners and player props by edge — the probability it would size on, minus the market's. When both kinds qualify, the best of each is included. They are chosen in the afternoon because props are won on knowing who plays, which firms up through the day (with *stale* availability the projections are worse than with none), and because the price recorded is then the one on offer when the text reaches you.
 
-**Afternoon games are not bet.** A game that tips before the run (weekend and holiday matinees) is skipped: no prediction, no pick. To cover them, move the daily job's `Hour` earlier on those days or run `nba-bot daily` by hand in the morning; the afternoon run then keeps to the same daily cap and doesn't pay again for games already predicted.
+**Afternoon games are not bet.** A game that tips before the run (weekend and holiday matinees) is skipped: no prediction, no pick. To cover them, run `nba-bot daily` by hand in the morning; the afternoon run then keeps to the same daily cap and doesn't pay again for games already predicted.
 
 **Why the close is its own run.** CLV — did you get a better number than the close — only exists if the bet and the close are different snapshots. Merge them and CLV is always ~0, which guts the metric the whole system is scored on.
 
-**Timezone:** launchd uses local machine time. If the Mac isn't on Pacific, edit `Hour` in the `scripts/launchd/` templates and re-run `scripts/schedule.sh install`.
+**Timezone:** the script sets `TZ=America/Los_Angeles` for both the schedule and the pipeline, so "today" is the same day whichever coast the Mac is on. To move a time, edit `JOBS` at the top of `scripts/run_due.sh`.
 
 ### When the Mac is asleep at run time
 
-A sleeping Mac runs nothing. launchd fires each missed job once, together, the next time it wakes, so `scripts/run_phase.sh` queues them and runs the daily run first, then the close. It also waits for Wi-Fi, starts Docker if the database isn't up, and holds the Mac awake until the run finishes.
+A sleeping Mac runs nothing. launchd fires the hourly job once on the next wake, and `scripts/run_due.sh` runs each job whose time has passed since it last ran: the daily run first, then the close. Each job records when it last finished (`logs/.last-daily`, `logs/.last-close`), so none runs twice, and one that crashes is tried again the next hour. It also waits for Wi-Fi, starts Docker if the database isn't up, and holds the Mac awake until the run finishes.
+
+A plugged-in Mac with the lid closed still wakes briefly in the background now and then (Power Nap), and a run that lands in one of those wakes can go through. Don't count on it for a game day: that run takes minutes and sends a text, and a background wake can end first.
 
 What a late run can and can't recover:
 
@@ -90,7 +92,7 @@ One prop market is the most the free plan holds; a second would take ~450 on its
 
 The bot paces itself so the month never runs dry: each game is bought once, no game lines are bought on a day with nothing to play, and the closing snapshot — the only optional purchase — runs only while the rest of the month's essentials are still covered. If credits get tight you lose CLV on some prop bets, never the bets themselves. `ODDS_QUOTA_RESERVE` is a last-resort floor that keeps game lines alive.
 
-**On a paid plan**, unset `PROP_MARKETS` and `GAME_MARKETS` to price all 12 prop markets and spreads/totals: about 3,500 credits a month.
+**On a paid plan**, unset `PROP_MARKETS` and `GAME_MARKETS` to price all 11 prop markets and spreads/totals: about 3,500 credits a month.
 
 ## Monitoring
 
@@ -104,8 +106,7 @@ nba-bot bets                                 # game-line paper record
 ## Alternative: cron
 
 ```cron
-30 14 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh daily
-30 15,18 * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_phase.sh close
+30 * * * * /ABSOLUTE/PATH/nba-trading-bot/scripts/run_due.sh
 ```
 
 On macOS, cron needs Full Disk Access granted to `/usr/sbin/cron` in System Settings → Privacy. launchd is the native, recommended path.
