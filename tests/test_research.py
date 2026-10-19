@@ -1,6 +1,6 @@
 """Research agent tests. DB/network-free."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from nba_bot.features.props import GameInfo, GameLine, PropsData
 from nba_bot.research import table
@@ -204,11 +204,11 @@ def db():
         yield session
 
 
-def _run(db, ws_table, turns, monkeypatch, cost=0.01, budget=2.0):
+def _run(db, ws_table, turns, monkeypatch, cost=0.01, budget=2.0, mode="confirm"):
     monkeypatch.setattr(agent.usage, "record", lambda *a, **k: cost)
     claude = _ScriptedClaude(turns)
-    run = agent.run_research(db, ws_table, client=claude, budget=budget)
-    return run, claude
+    run = agent.start_run(db, focus=None, budget=budget, mode=mode)
+    return agent.run_research(db, run, ws_table, client=claude), claude
 
 
 def test_a_run_explores_confirms_records_and_finishes(db, ws_table, monkeypatch):
@@ -250,3 +250,38 @@ def test_the_budget_warns_then_stops(db, ws_table, monkeypatch):
     assert run.status == "out_of_budget" and run.turns == 3
     warning = claude.requests[2]["messages"][-1]
     assert warning["role"] == "system" and "Budget nearly spent" in warning["content"]
+
+
+def test_an_explore_only_run_never_sees_confirm_and_keeps_its_candidates(db, ws_table, monkeypatch):
+    candidate = {"hypothesis": "tired legs", "rationale": "back-to-backs", "where": B2B,
+                 "stat": "pts", "multiplier": 0.88, "evidence": "+1.6 points, clear of zero"}
+    run, claude = _run(db, ws_table, [
+        [("try_fix", {"where": B2B, "stat": "pts"})],
+        [("confirm", {"hypothesis": "x", "rationale": "y", "where": B2B, "stat": "pts",
+                      "multiplier": 0.88})],                     # not offered: must not run
+        [("finish", {"summary": "one lead", "explored": [], "candidates": [candidate]})],
+    ], monkeypatch, mode="explore")
+    assert "confirm" not in {t["name"] for t in claude.requests[0]["tools"]}
+    assert "explore-only" in claude.requests[0]["messages"][0]["content"]
+    assert db.query(ResearchFinding).count() == 0 and agent.confirmations_so_far(db) == 0
+    assert run.candidates == [candidate]
+    assert [line.split(":")[0] for line in (e["line"] for e in run.log)] == [
+        "try_fix", "confirm", "finish"]
+    assert any("candidate from an explore-only run" in line for line in agent.prior_ideas(db))
+
+
+def test_a_run_starts_only_within_the_limits(db):
+    now = datetime(2026, 10, 19, 18, tzinfo=timezone.utc)
+    assert "budget" in agent.why_not_start(db, 0, now)
+    assert "budget" in agent.why_not_start(db, agent.MAX_BUDGET + 1, now)
+    assert agent.why_not_start(db, 2, now) is None
+    run = agent.start_run(db, focus=None, budget=2, mode="explore")
+    run.started_at = now - timedelta(minutes=5)
+    db.commit()
+    assert "already going" in agent.why_not_start(db, 2, now)
+    # A run left "running" by a server that died is closed out, not waited on forever.
+    run.started_at, run.cost_usd = now - timedelta(hours=2), 3.9
+    db.commit()
+    assert "today's research spend" in agent.why_not_start(db, 2, now)
+    assert run.status == "error" and "Interrupted" in run.summary
+    assert agent.why_not_start(db, 1, now) is None

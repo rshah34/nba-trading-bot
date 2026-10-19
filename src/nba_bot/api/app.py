@@ -1,17 +1,23 @@
 """FastAPI app serving the dashboard: tonight's slate, players, teams, news, the
-picks and their record, and the live game model's accuracy.
+picks and their record, the live game model's accuracy, and the research agent's runs.
 
-Read-only: the pipeline writes to Postgres; this layer only serves what's there, so
-the dashboard stays a thin client. Run locally with `uv run nba-bot serve`.
+Read-only, with one exception: starting a research run, which spends money and the
+held-back season, so it is limited (one at a time, a budget and a daily cap) and only
+accepted from this machine. It never touches bets, picks, odds or the daily pipeline;
+those are written by the pipeline alone. Run locally with `uv run nba-bot serve`.
 """
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Iterator
 from datetime import date
+from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from nba_bot.api import schemas, views
@@ -29,7 +35,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -124,6 +130,58 @@ def news(
 def picks(session: Session = Depends(get_session)) -> dict:
     """Every recorded pick (game winners and props) with the running records."""
     return views.picks(session)
+
+
+@app.get("/research")
+def research(session: Session = Depends(get_session)) -> dict:
+    """The research agent's runs, the fixes it proved, and how worn the held-back season is."""
+    return views.research(session)
+
+
+class ResearchRequest(BaseModel):
+    focus: str | None = Field(None, max_length=300)
+    budget: float = 2.0
+    mode: Literal["explore", "confirm"] = "explore"
+
+
+_LOCAL = {"127.0.0.1", "::1", "localhost"}
+_starting = threading.Lock()   # two clicks at once must not both pass the one-run check
+log = logging.getLogger("nba_bot.api")
+
+
+def _research_in_background(run_id: int) -> None:
+    from nba_bot.db.models import ResearchRun
+    from nba_bot.features.props import load_props_data
+    from nba_bot.research import agent, table
+
+    with SessionLocal() as session:
+        run = session.get(ResearchRun, run_id)
+        try:
+            agent.log_line(session, run, "building the research table")
+            agent.run_research(session, run, table.build(load_props_data(session)))
+        except Exception as exc:  # noqa: BLE001 — the run must end with a status, whatever broke
+            log.exception("research run %s failed", run_id)
+            session.rollback()
+            run = session.get(ResearchRun, run_id)
+            run.status, run.summary = "error", f"{type(exc).__name__}: {exc}"
+            session.commit()
+
+
+@app.post("/research/runs", status_code=202)
+def start_research(req: ResearchRequest, request: Request,
+                   session: Session = Depends(get_session)) -> dict:
+    """Start a research run in the background; the page follows it through /research."""
+    from nba_bot.research import agent
+
+    if request.client is None or request.client.host not in _LOCAL:
+        raise HTTPException(status_code=403, detail="Research runs can only be started from this machine.")
+    with _starting:
+        reason = agent.why_not_start(session, req.budget)
+        if reason:
+            raise HTTPException(status_code=409, detail=reason)
+        run = agent.start_run(session, focus=req.focus, budget=req.budget, mode=req.mode)
+    threading.Thread(target=_research_in_background, args=(run.id,), daemon=True).start()
+    return {"id": run.id}
 
 
 @app.get("/game-model", response_model=schemas.BacktestReport)

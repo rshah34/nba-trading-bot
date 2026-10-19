@@ -301,3 +301,65 @@ export interface BacktestReport {
   accuracy_home_back_to_back: SplitAccuracy | null;
   calibration: CalibrationBin[];
 }
+
+/** One side of a research finding: the slice's projection bias on one season. */
+export type ResearchSide = {
+  rows: number;
+  players: number;
+  bias: number;
+  ci95: [number, number];
+  bias_pct: number | null;
+  mae: number;
+  mean_actual: number;
+};
+
+export type ResearchFinding = {
+  id: number;
+  run_id: number;
+  created_at: string;
+  hypothesis: string;
+  rationale: string | null;
+  slice: string[];
+  stat: string;
+  multiplier: number;
+  verdict: "pass" | "fail";
+  applied_at: string | null;
+  explore: ResearchSide;
+  held: ResearchSide;
+  mae: [number, number];
+  brier: [number, number];
+  reasons: string[];
+};
+
+/** A fix an explore-only run thinks is worth confirming later. */
+export type ResearchCandidate = {
+  hypothesis: string;
+  rationale: string;
+  slice: string[];
+  stat: string;
+  multiplier: number;
+  evidence: string;
+};
+
+export type ResearchRun = {
+  id: number;
+  started_at: string;
+  status: string;
+  mode: "explore" | "confirm";
+  focus: string | null;
+  budget_usd: number | null;
+  cost_usd: number;
+  turns: number;
+  summary: string | null;
+  explored: { idea: string; outcome: string }[];
+  candidates: ResearchCandidate[];
+  log: string[];
+  findings: ResearchFinding[];
+};
+
+export type ResearchPayload = {
+  runs: ResearchRun[];
+  limits: { max_budget: number; daily_cap: number; spent_today: number; running: boolean; confirms_per_run: number };
+  ready: ResearchFinding[];
+  held_back: { season: string; confirmations: number; next_z: number };
+};

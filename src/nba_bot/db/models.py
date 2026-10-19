@@ -347,11 +347,15 @@ class ResearchRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model: Mapped[str] = mapped_column(String, nullable=False)
     focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="confirm")  # explore | confirm
     status: Mapped[str] = mapped_column(String, nullable=False)
+    budget_usd: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     cost_usd: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
     turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     explored: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)   # explore-only runs
+    log: Mapped[list] = mapped_column(JSON, nullable=False, default=list)  # [{ts, line}]
 
 
 class ResearchFinding(Base):

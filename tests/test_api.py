@@ -26,7 +26,7 @@ def test_health_needs_no_database():
 def test_routes_are_registered():
     paths = {r.path for r in api.app.routes}
     assert {"/health", "/slate", "/slate/players", "/games/{game_id}", "/directory", "/players", "/players/{player_id}", "/teams",
-            "/teams/{team_id}", "/news", "/picks", "/game-model"} <= paths
+            "/teams/{team_id}", "/news", "/picks", "/game-model", "/research"} <= paths
 
 
 def test_averages_over_a_season_and_a_recent_window():
@@ -92,3 +92,41 @@ def test_injury_return_date_is_read_or_left_empty():
     assert _return_date({"details": {"returnDate": "2026-10-13"}}) == date(2026, 10, 13)
     assert _return_date({"details": {}}) is None and _return_date({}) is None
     assert _return_date({"details": {"returnDate": "soon"}}) is None
+
+
+def test_a_research_finding_is_condensed_for_the_page():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    side = lambda bias: {"rows": 900, "players": 120,  # noqa: E731
+                         "pts": {"bias": bias, "ci95": [bias - 0.2, bias + 0.2], "mae": 4.9}}
+    f = SimpleNamespace(
+        id=7, run_id=2, created_at=datetime(2026, 10, 19, tzinfo=timezone.utc),
+        hypothesis="tired legs", rationale="back-to-backs", stat="pts", multiplier=0.97,
+        slice=[{"field": "b2b", "op": "==", "value": True}], verdict="pass", applied_at=None,
+        explore={"in_slice": {"before": side(0.5)}},
+        confirm={"in_slice": {"before": side(0.4)},
+                 "whole_model": {"mae_before": 2.245, "mae_after": 2.244,
+                                 "brier_before": 0.2247, "brier_after": 0.2246}},
+        reasons=["held-back bias +0.400"],
+    )
+    row = views._finding(f)
+    assert row["slice"] == ["back-to-back"] and row["held"]["bias"] == 0.4
+    assert row["explore"]["rows"] == 900 and row["mae"] == [2.245, 2.244]
+
+
+def test_slices_read_as_plain_words():
+    assert views._slice_words([
+        {"field": "home", "op": "==", "value": False},
+        {"field": "role", "op": "in", "value": ["starter", "star"]},
+        {"field": "rest_days", "op": ">=", "value": 2},
+        {"field": "expected_margin", "op": "between", "value": [-3, 3]},
+    ]) == ["away", "role: starter or star", "rest days ≥ 2", "expected margin -3–3"]
+    assert views._slice_words([]) == ["every player-game"]
+
+
+def test_research_runs_start_only_from_this_machine():
+    from fastapi.testclient import TestClient
+
+    resp = TestClient(api.app).post("/research/runs", json={"budget": 1})
+    assert resp.status_code == 403            # the test client is not localhost

@@ -302,11 +302,11 @@ class Workspace:
         reasons.append(f"|bias| {abs(bias):.3f} vs {z:.2f} × SE {se:.3f} = {z * se:.3f}"
                        + (": clear of zero" if clear else ": not clear of zero"))
         better = after.mae < self._held_scores.mae
-        reasons.append(f"whole-model MAE {whole['mae_before']} → {whole['mae_after']}"
+        reasons.append(f"whole-model MAE {self._held_scores.mae:.6f} → {after.mae:.6f}"
                        + ("" if better else ": no better"))
         no_worse = after.pooled_brier() <= self._held_scores.pooled_brier()
-        reasons.append(f"whole-model Brier {whole['brier_before']} → {whole['brier_after']}"
-                       + ("" if no_worse else ": worse"))
+        reasons.append(f"whole-model Brier {self._held_scores.pooled_brier():.6f} → "
+                       f"{after.pooled_brier():.6f}" + ("" if no_worse else ": worse"))
 
         result = Confirmation(
             hypothesis=hypothesis, where=where or [], stat=stat, multiplier=round(multiplier, 4),

@@ -31,6 +31,14 @@ best bets, and scores itself against closing lines.
   of the same thing are consolidated and ranked by how firmly and widely they are
   sourced, then feed both models. The injury report only says who is out; the news
   says who is limited, starting, or resting.
+- **Researches its own errors** — a tool-using Claude agent looks for where the prop
+  projections are systematically wrong. It explores on 2024-25 through fixed tools (no
+  free-form code): bias with error bars clustered by player, and what a fix would do
+  to the whole model. Each fix it believes in gets one look at 2025-26, held back for
+  this, and passes only if it holds there, clears a bar that rises with every
+  confirmation ever run, and improves the whole model. Passing fixes are proposals,
+  applied by hand. Runs start from the dashboard's Research page or `nba-bot research`;
+  an explore-only mode lists candidate fixes without touching the held-back season.
 - **Makes a few picks a day** — at most three bets across game winners and props,
   ranked by edge at current prices, sized by fractional Kelly on a probability blended
   toward the market, and settled against the result with CLV. Every book quoted sets
@@ -115,6 +123,16 @@ nba-bot digest           # print the best-bets text (--results for last night, -
 nba-bot notify-test      # send a test text
 nba-bot costs            # what the Claude API has actually cost, by purpose and day
 ```
+
+### Research agent
+```bash
+nba-bot research --focus "rest and travel"   # explore only: lists candidate fixes (focus optional)
+nba-bot research --confirm --budget 2        # also scores fixes on the held-back season
+nba-bot research-applied 7                   # mark finding 7 as put into the model
+```
+Each run is capped by `--budget` (at most $5), one runs at a time, and all runs together
+stop at $5 a day. The dashboard's Research page starts the same runs and follows them
+live; it only accepts requests from this machine.
 
 ### Individual steps
 ```bash

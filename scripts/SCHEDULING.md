@@ -67,7 +67,7 @@ Every digest is also written to `logs/digest-<date>.txt`, so a failed send loses
 
 ## Claude API cost
 
-One thing in the daily run calls Claude — reading the news — and every call is logged to `logs/api-usage.jsonl` (`nba-bot costs` totals it). Game predictions come from a statistical model and cost nothing.
+One thing in the daily run calls Claude — reading the news — and every call is logged to `logs/api-usage.jsonl` (`nba-bot costs` totals it). Game predictions come from a statistical model and cost nothing. The research agent (`nba-bot research`) is never scheduled; each run you start is capped by `--budget` (default $2) and logged as `research`.
 
 | Call | When | Model | Measured cost |
 |------|------|-------|---------------|

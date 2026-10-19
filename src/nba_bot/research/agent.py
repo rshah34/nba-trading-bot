@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 import pandas as pd
@@ -94,10 +94,12 @@ _WHERE = {
 _STAT = {"type": "string", "enum": list(TARGETS)}
 
 
-def _tool(name: str, description: str, properties: dict) -> dict:
+def _tool(name: str, description: str, properties: dict, strict: bool = True) -> dict:
     """A strict tool: every argument typed and present (optional ones are nullable),
-    so a malformed call is rejected before it reaches the tools."""
-    return {"name": name, "description": description, "strict": True,
+    so a malformed call is rejected before it reaches the tools. `finish` isn't strict:
+    with its nested candidates, the strict schemas together compile to a grammar the
+    API refuses as too large, and it only reports — nothing runs on its arguments."""
+    return {"name": name, "description": description, "strict": strict,
             "input_schema": {"type": "object", "properties": properties,
                              "required": list(properties), "additionalProperties": False}}
 
@@ -132,15 +134,83 @@ TOOLS = [
         "rationale": {"type": "string", "description": "The basketball reason, briefly."},
         "where": _WHERE, "stat": _STAT,
         "multiplier": {"type": "number", "description": "Between 0.8 and 1.25, fixed now."}}),
-    _tool("finish", "End the run with a summary of what you found and the ideas you looked at "
-                    "but did not confirm.", {
+    _tool("finish", "End the run with a summary, the ideas you looked at but did not "
+                    "confirm, and (in an explore-only run) your strongest candidate fixes.", {
         "summary": {"type": "string", "description": "What you found, in a few sentences."},
         "explored": {"type": "array", "items": {
             "type": "object",
             "properties": {"idea": {"type": "string"},
                            "outcome": {"type": "string", "description": "What the numbers said."}},
-            "required": ["idea", "outcome"], "additionalProperties": False}}}),
+            "required": ["idea", "outcome"], "additionalProperties": False}},
+        "candidates": {"type": "array", "description": "Explore-only runs: fixes worth "
+                       "confirming later, strongest first. Empty otherwise.", "items": {
+            "type": "object",
+            "properties": {
+                "hypothesis": {"type": "string"},
+                "rationale": {"type": "string"},
+                "where": _WHERE, "stat": _STAT,
+                "multiplier": {"type": "number", "description": "What try_fix found."},
+                "evidence": {"type": "string", "description": "The exploration numbers."}},
+            "required": ["hypothesis", "rationale", "where", "stat", "multiplier", "evidence"],
+            "additionalProperties": False}}}, strict=False),
 ]
+MODES = ("explore", "confirm")
+
+
+def tools_for(mode: str) -> list[dict]:
+    """An explore-only run is never offered `confirm`: the held-back season stays untouched."""
+    return [t for t in TOOLS if mode == "confirm" or t["name"] != "confirm"]
+
+
+# --------------------------------------------------------------------------- #
+# Limits on starting a run — the same from the command line and the dashboard.
+# --------------------------------------------------------------------------- #
+MAX_BUDGET = 5.0             # dollars, one run
+DAILY_CAP = 5.0              # dollars, every run started today together
+_STALE = timedelta(minutes=30)   # a "running" run this old died with its process
+
+
+def _start_of_today(now: datetime) -> datetime:
+    local = now.astimezone()
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def why_not_start(session: Session, budget: float, now: datetime | None = None) -> str | None:
+    """The reason a run can't start now, or None if it can."""
+    now = now or datetime.now(timezone.utc)
+    if not 0 < budget <= MAX_BUDGET:
+        return f"The budget must be more than $0 and at most ${MAX_BUDGET:g}."
+    for run in session.execute(select(ResearchRun).where(ResearchRun.status == "running")).scalars():
+        started = run.started_at if run.started_at.tzinfo else run.started_at.replace(tzinfo=timezone.utc)
+        if now - started > _STALE:
+            run.status, run.summary = "error", "Interrupted: the server stopped mid-run."
+            run.finished_at = now
+        else:
+            return "A run is already going. Wait for it to finish."
+    session.commit()
+    spent = sum(float(r.cost_usd or 0) for r in session.execute(
+        select(ResearchRun).where(ResearchRun.started_at >= _start_of_today(now))).scalars())
+    if spent + budget > DAILY_CAP:
+        return (f"That would take today's research spend past ${DAILY_CAP:g} "
+                f"(${spent:.2f} spent so far).")
+    return None
+
+
+def start_run(session: Session, *, focus: str | None, budget: float, mode: str) -> ResearchRun:
+    """Record a new run as started. `run_research` does the work."""
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    run = ResearchRun(model=MODEL, focus=focus or None, mode=mode, status="running",
+                      budget_usd=budget, cost_usd=0, turns=0, log=[])
+    session.add(run)
+    session.commit()
+    return run
+
+
+def log_line(session: Session, run: ResearchRun, line: str) -> None:
+    """Append a progress line the dashboard shows while the run works."""
+    run.log = [*(run.log or []), {"ts": datetime.now(timezone.utc).isoformat(), "line": line}]
+    session.commit()
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +225,7 @@ def confirmations_so_far(session: Session, season: str = tools.CONFIRM) -> int:
 
 def prior_ideas(session: Session) -> list[str]:
     """One line per idea tested before: confirmed ones with their verdict, then the
-    ones explored and dropped. Newest first."""
+    candidates and dropped ideas of earlier runs. Newest first."""
     lines = [
         f"- {f.hypothesis} [{tools.describe_slice(f.slice)}; {f.stat} x{float(f.multiplier):g}]: "
         f"{'PASSED' if f.verdict == 'pass' else 'failed'} confirmation"
@@ -164,16 +234,27 @@ def prior_ideas(session: Session) -> list[str]:
         ).scalars()
     ]
     for run in session.execute(
-        select(ResearchRun).where(ResearchRun.explored.is_not(None))
+        select(ResearchRun).where(ResearchRun.status != "running")
         .order_by(ResearchRun.started_at.desc())
     ).scalars():
-        lines += [f"- {e['idea']}: explored, not confirmed ({e['outcome']})" for e in run.explored]
+        lines += [f"- {c['hypothesis']} [{tools.describe_slice(c['where'])}; {c['stat']} "
+                  f"x{c['multiplier']:g}]: candidate from an explore-only run, not yet confirmed "
+                  f"({c['evidence']})" for c in run.candidates or []]
+        lines += [f"- {e['idea']}: explored, not confirmed ({e['outcome']})"
+                  for e in run.explored or []]
     return lines[:_PRIOR_SHOWN]
 
 
-def _opening(focus: str | None, prior: list[str]) -> str:
+def _opening(focus: str | None, prior: list[str], mode: str, confirms: int) -> str:
     parts = [f"Focus for this run: {focus}." if focus
              else "No particular focus: look wherever you think the model is most likely wrong."]
+    if mode == "explore":
+        parts.append("This run is explore-only: confirm is not available and the held-back "
+                     "season stays untouched. In finish, list your strongest candidate fixes "
+                     "with the multiplier try_fix found, so a later run can confirm them.")
+    else:
+        parts.append(f"You may run up to {confirms} confirmations; use only what your "
+                     "evidence supports. Leave candidates empty in finish.")
     parts.append("Ideas tested before:\n" + "\n".join(prior) if prior
                  else "No ideas have been tested before.")
     parts.append("Start with describe.")
@@ -199,6 +280,12 @@ def _call(ws: tools.Workspace, name: str, args: dict):
     raise tools.ToolError(f"unknown tool {name!r}")
 
 
+def _step_line(name: str, args: dict) -> str:
+    return (f"{name}: {tools.describe_slice(args.get('where'))}"
+            + (f" by {args['by']}" if args.get("by") else "")
+            + (f" ({args['stat']})" if args.get("stat") else ""))
+
+
 def _save_finding(session: Session, run: ResearchRun, c: tools.Confirmation,
                   rationale: str | None) -> ResearchFinding:
     finding = ResearchFinding(
@@ -218,27 +305,34 @@ def _save_finding(session: Session, run: ResearchRun, c: tools.Confirmation,
 # --------------------------------------------------------------------------- #
 def run_research(
     session: Session,
+    run: ResearchRun,
     table: pd.DataFrame,
     *,
-    focus: str | None = None,
-    budget: float = DEFAULT_BUDGET,
     client: anthropic.Anthropic | None = None,
     say: Callable[[str], None] = lambda _: None,
 ) -> ResearchRun:
-    """One research run, start to finish. `say` gets a line per step, for progress."""
+    """Carry out a run recorded by `start_run`. Each step goes to the run's log (for
+    the dashboard) and to `say` (for a terminal)."""
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key or None)
-    ws = tools.Workspace(table, prior_confirmations=confirmations_so_far(session))
-    run = ResearchRun(model=MODEL, focus=focus, status="running", cost_usd=0, turns=0)
-    session.add(run)
-    session.commit()
-
-    messages: list[dict] = [{"role": "user", "content": _opening(focus, prior_ideas(session))}]
+    budget = float(run.budget_usd or DEFAULT_BUDGET)
+    confirms = tools.CONFIRMS_PER_RUN if run.mode == "confirm" else 0
+    ws = tools.Workspace(table, prior_confirmations=confirmations_so_far(session),
+                         confirms_per_run=confirms)
+    offered = tools_for(run.mode)
+    messages: list[dict] = [{"role": "user", "content": _opening(
+        run.focus, prior_ideas(session), run.mode, confirms)}]
     spent, warned, nudged = 0.0, False, False
 
-    def end(status: str, summary: str | None = None, explored: list | None = None) -> ResearchRun:
+    def note(line: str) -> None:
+        say(line)
+        log_line(session, run, line)
+
+    def end(status: str, summary: str | None = None, explored: list | None = None,
+            candidates: list | None = None) -> ResearchRun:
         run.status, run.cost_usd = status, round(spent, 4)
         run.summary = summary if summary is not None else run.summary
         run.explored = explored if explored is not None else run.explored
+        run.candidates = candidates if candidates else run.candidates
         run.finished_at = datetime.now(timezone.utc)
         session.commit()
         return run
@@ -246,7 +340,7 @@ def run_research(
     for turn in range(1, MAX_TURNS + 1):
         try:
             response = client.beta.messages.create(
-                model=MODEL, max_tokens=16000, system=SYSTEM, tools=TOOLS, messages=messages,
+                model=MODEL, max_tokens=16000, system=SYSTEM, tools=offered, messages=messages,
                 output_config={"effort": EFFORT},
                 cache_control={"type": "ephemeral"},      # the growing history is re-read each turn
                 betas=["server-side-fallback-2026-07-01"], fallbacks="default",
@@ -255,7 +349,7 @@ def run_research(
             log.exception("research call failed")
             return end("error", summary=f"API error: {exc}")
         spent += usage.record("research", response.model, response) or 0.0
-        run.turns = turn
+        run.turns, run.cost_usd = turn, round(spent, 4)
 
         if response.stop_reason == "refusal":
             return end("refused", summary="The model declined to continue.")
@@ -276,22 +370,22 @@ def run_research(
         for call in calls:
             args = call.input or {}
             if call.name == "finish":
-                say(f"finish: {args.get('summary', '')}")
-                return end("done", summary=args.get("summary"), explored=args.get("explored") or [])
+                note("finish")
+                candidates = (args.get("candidates") or []) if run.mode == "explore" else []
+                return end("done", summary=args.get("summary"),
+                           explored=args.get("explored") or [], candidates=candidates)
             try:
                 result = _call(ws, call.name, args)
                 if isinstance(result, tools.Confirmation):
                     _save_finding(session, run, result, args.get("rationale"))
-                    say(f"confirm: {result.hypothesis} -> {result.verdict.upper()}")
+                    note(f"confirm: {result.hypothesis} -> {result.verdict.upper()}")
                     result = asdict(result)
                 else:
-                    say(f"{call.name}: {tools.describe_slice(args.get('where'))}"
-                        + (f" by {args['by']}" if args.get("by") else "")
-                        + (f" ({args['stat']})" if args.get("stat") else ""))
+                    note(_step_line(call.name, args))
                 results.append({"type": "tool_result", "tool_use_id": call.id,
                                 "content": _dumps(result)})
             except (tools.ToolError, KeyError, TypeError, ValueError) as exc:
-                say(f"{call.name}: refused ({exc})")
+                note(f"{call.name}: refused ({exc})")
                 results.append({"type": "tool_result", "tool_use_id": call.id,
                                 "content": f"Error: {exc}", "is_error": True})
         messages.append({"role": "user", "content": results})

@@ -142,29 +142,39 @@ def backtest(
 @app.command()
 def research(
     focus: str = typer.Option("", help="What to look into, e.g. 'rest and travel'. Default: anything."),
-    budget: float = typer.Option(2.0, help="Dollar cap for this run's Claude calls."),
+    budget: float = typer.Option(2.0, help="Dollar cap for this run's Claude calls (at most $5)."),
+    confirm: bool = typer.Option(False, "--confirm", help="Also score fixes on the held-back "
+                                 "season. Without it the run explores only and lists candidates."),
 ):
-    """Let the research agent look for where the prop projections go wrong. Each fix
-    it believes in is scored once on the held-back season; passing ones are proposals
-    to apply by hand."""
+    """Let the research agent look for where the prop projections go wrong. With
+    --confirm, each fix it believes in is scored once on the held-back season;
+    passing ones are proposals to apply by hand."""
     from nba_bot.features.props import load_props_data
     from nba_bot.research import agent, table
 
     with SessionLocal() as session:
+        reason = agent.why_not_start(session, budget)
+        if reason:
+            rprint(f"[red]{reason}[/red]")
+            raise typer.Exit(1)
+        run = agent.start_run(session, focus=focus, budget=budget,
+                              mode="confirm" if confirm else "explore")
         rprint("[cyan]Building the research table (about 30 seconds)...[/cyan]")
         df = table.build(load_props_data(session))
-        run = agent.run_research(session, df, focus=focus or None, budget=budget,
-                                 say=lambda line: rprint(f"  [dim]{line}[/dim]"))
+        run = agent.run_research(session, run, df, say=lambda line: rprint(f"  [dim]{line}[/dim]"))
         findings = session.execute(
             select(ResearchFinding).where(ResearchFinding.run_id == run.id)
         ).scalars().all()
-    rprint(f"\n[bold]Run {run.id}[/bold]: {run.status}, {run.turns} turns, ${float(run.cost_usd):.2f}")
+    rprint(f"\n[bold]Run {run.id}[/bold] ({run.mode}): {run.status}, {run.turns} turns, "
+           f"${float(run.cost_usd):.2f}")
     if run.summary:
         rprint(run.summary)
     for f in findings:
         color = "green" if f.verdict == "pass" else "yellow"
         rprint(f"  [{color}]{f.verdict.upper()}[/{color}] #{f.id} {f.hypothesis} "
                f"({f.stat} x{float(f.multiplier):g})")
+    for c in run.candidates or []:
+        rprint(f"  [cyan]CANDIDATE[/cyan] {c['hypothesis']} ({c['stat']} x{c['multiplier']:g})")
 
 
 @app.command()

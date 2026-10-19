@@ -37,6 +37,25 @@ export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await resp.json()) as T;
 }
 
+/** POST a JSON body. A refusal comes back as an ApiError carrying the API's own reason. */
+export async function post<T>(path: string, body: unknown): Promise<T> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(`Could not reach the API at ${API_BASE}. Is \`nba-bot serve\` running?`);
+  }
+  if (!resp.ok) {
+    const detail = await resp.json().then((j) => j.detail).catch(() => null);
+    throw new ApiError(typeof detail === "string" ? detail : `API returned ${resp.status}`, resp.status);
+  }
+  return (await resp.json()) as T;
+}
+
 interface ApiState<T> {
   data: T | null;
   error: string | null;

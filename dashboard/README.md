@@ -30,6 +30,7 @@ Needs Node 20+ (`npm install` once). The site reads the API address from
 | **Team** (`/teams/[id]`) | Roster with recent minutes and injury status, results, injury report, news. |
 | **News** (`/news`) | Player reports read out of the news feeds, merged across articles, newest and firmest first. |
 | **Picks** (`/picks`) | Every recorded pick and how it finished, closing-line value, and the live game model's accuracy. |
+| **Research** (`/research`) | Start a research run (explore only, or explore and confirm) and follow it live; every run's fixes with their bias on both seasons, whether they passed, explore-only candidates, and fixes waiting to be applied. The one page that writes: it starts runs, nothing else. |
 
 Press `/` anywhere to search players and teams.
 

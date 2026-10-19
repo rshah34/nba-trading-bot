@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import math
 import time
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from statistics import NormalDist
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -15,6 +17,8 @@ from nba_bot.agents import betting_agent, data_agent, news_agent, props_agent
 from nba_bot.agents.data_agent import _season_for_date
 from nba_bot.data.nba_stats import is_preseason
 from nba_bot.features.games import GAME_MODEL
+from nba_bot.research import agent as research_agent
+from nba_bot.research import tools as research_tools
 from nba_bot.db.models import (
     REAL_GAMES,
     Bet,
@@ -23,6 +27,8 @@ from nba_bot.db.models import (
     PlayerGameStats,
     Prediction,
     PropBet,
+    ResearchFinding,
+    ResearchRun,
     Team,
 )
 from nba_bot.features.props import (
@@ -656,3 +662,90 @@ def picks(session: Session) -> dict:
         "props": props_agent.track_record(session),
         "games": betting_agent.track_record(session),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Research agent.
+# --------------------------------------------------------------------------- #
+_FLAG_WORDS = {  # field -> (when true, when false)
+    "b2b": ("back-to-back", "not a back-to-back"), "home": ("home", "away"),
+    "three_in_four": ("3 games in 4 nights", "not 3 in 4"),
+    "at_altitude": ("at Denver or Utah", "not at altitude"),
+    "opp_b2b": ("opponent on a back-to-back", "opponent rested"),
+    "new_team": ("first game for a new team", "same team"),
+}
+_OP_WORDS = {"==": "=", "!=": "≠", "<": "<", "<=": "≤", ">": ">", ">=": "≥"}
+
+
+def _slice_words(where: list[dict]) -> list[str]:
+    """A slice as short plain phrases, one per condition."""
+    out = []
+    for c in where:
+        field, op, value = str(c["field"]), c["op"], c["value"]
+        label = field.replace("_", " ")
+        if field in _FLAG_WORDS and op in ("==", "!=") and isinstance(value, bool):
+            out.append(_FLAG_WORDS[field][0 if (value == (op == "==")) else 1])
+        elif op == "in":
+            out.append(f"{label}: {' or '.join(str(v) for v in value)}")
+        elif op == "between":
+            out.append(f"{label} {value[0]}–{value[1]}")
+        else:
+            out.append(f"{label} {_OP_WORDS.get(op, op)} {value}")
+    return out or ["every player-game"]
+
+
+def _finding(f: ResearchFinding) -> dict:
+    stat = f.stat
+    explore = f.explore["in_slice"]["before"]
+    held = f.confirm["in_slice"]["before"]
+    whole = f.confirm["whole_model"]
+    return {
+        "id": f.id, "run_id": f.run_id, "created_at": _iso(f.created_at),
+        "hypothesis": f.hypothesis, "rationale": f.rationale,
+        "slice": _slice_words(f.slice), "stat": stat,
+        "multiplier": _f(f.multiplier), "verdict": f.verdict, "applied_at": _iso(f.applied_at),
+        "explore": {"rows": explore["rows"], "players": explore["players"], **explore[stat]},
+        "held": {"rows": held["rows"], "players": held["players"], **held[stat]},
+        "mae": [whole["mae_before"], whole["mae_after"]],
+        "brier": [whole["brier_before"], whole["brier_after"]],
+        "reasons": f.reasons,
+    }
+
+
+def research(session: Session) -> dict:
+    """Every research run with its findings, the fixes waiting to be applied, and how
+    worn the held-back season is."""
+    findings = session.execute(
+        select(ResearchFinding).order_by(ResearchFinding.created_at.desc())
+    ).scalars().all()
+    by_run: dict[int, list[dict]] = defaultdict(list)
+    for f in findings:
+        by_run[f.run_id].append(_finding(f))
+    rows = session.execute(select(ResearchRun).order_by(ResearchRun.started_at.desc())).scalars().all()
+    runs = [
+        {"id": r.id, "started_at": _iso(r.started_at), "status": r.status, "mode": r.mode,
+         "focus": r.focus, "budget_usd": _f(r.budget_usd), "cost_usd": _f(r.cost_usd),
+         "turns": r.turns, "summary": r.summary, "explored": r.explored or [],
+         "candidates": [{**c, "slice": _slice_words(c["where"])} for c in r.candidates or []],
+         "log": [e["line"] for e in r.log or []], "findings": by_run.get(r.id, [])}
+        for r in rows
+    ]
+    worn = sum(f.confirm_season == research_tools.CONFIRM for f in findings)
+    today = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    return {
+        "runs": runs,
+        "limits": {
+            "max_budget": research_agent.MAX_BUDGET, "daily_cap": research_agent.DAILY_CAP,
+            "spent_today": round(sum(float(r.cost_usd or 0) for r in rows
+                                     if r.started_at and r.started_at >= today), 2),
+            "running": any(r.status == "running" for r in rows),
+            "confirms_per_run": research_tools.CONFIRMS_PER_RUN,
+        },
+        "ready": [_finding(f) for f in findings if f.verdict == "pass" and f.applied_at is None],
+        "held_back": {
+            "season": research_tools.CONFIRM, "confirmations": worn,
+            # The z an error bar must clear on the next confirmation (Bonferroni).
+            "next_z": round(NormalDist().inv_cdf(1 - research_tools.ALPHA / (2 * (worn + 1))), 2),
+        },
+    }
+
