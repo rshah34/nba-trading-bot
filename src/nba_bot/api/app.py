@@ -1,9 +1,9 @@
 """FastAPI app serving the dashboard: tonight's slate, players, teams, news, the
 picks and their record, the live game model's accuracy, and the research agent's runs.
 
-Read-only, with one exception: starting a research run, which spends money and the
-held-back season, so it is limited (one at a time, a budget and a daily cap) and only
-accepted from this machine. It never touches bets, picks, odds or the daily pipeline;
+Read-only, with two exceptions that spend money: starting a research run (which also
+spends the held-back season) and asking a question. Both are limited (one at a time,
+a budget, a daily cap) and only accepted from this machine. It never touches bets, picks, odds or the daily pipeline;
 those are written by the pipeline alone. Run locally with `uv run nba-bot serve`.
 """
 
@@ -182,6 +182,38 @@ def start_research(req: ResearchRequest, request: Request,
         run = agent.start_run(session, focus=req.focus, budget=req.budget, mode=req.mode)
     threading.Thread(target=_research_in_background, args=(run.id,), daemon=True).start()
     return {"id": run.id}
+
+
+@app.get("/ask")
+def ask_limits(session: Session = Depends(get_session)) -> dict:
+    """What today's questions have spent against the daily limit."""
+    return views.ask_limits(session)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., max_length=500)
+
+
+_asking = threading.Lock()
+
+
+@app.post("/ask")
+def ask(req: AskRequest, request: Request, session: Session = Depends(get_session)) -> dict:
+    """Answer one question. Takes a few seconds: Claude queries the database as a
+    read-only login and writes the answer."""
+    from nba_bot.ask import agent as ask_agent
+
+    if request.client is None or request.client.host not in _LOCAL:
+        raise HTTPException(status_code=403, detail="Questions can only be asked from this machine.")
+    if not _asking.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Another question is being answered. Try again in a moment.")
+    try:
+        reason = ask_agent.why_not_ask(session, req.question)
+        if reason:
+            raise HTTPException(status_code=409, detail=reason)
+        return views.ask_record(ask_agent.ask(session, req.question))
+    finally:
+        _asking.release()
 
 
 @app.get("/game-model", response_model=schemas.BacktestReport)

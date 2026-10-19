@@ -379,3 +379,19 @@ class ResearchFinding(Base):
     threshold_z: Mapped[float] = mapped_column(Numeric, nullable=False)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+
+
+class AskQuestion(Base):
+    """A question put to Ask, its answer, and the queries behind it."""
+
+    __tablename__ = "asks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queries: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="page")   # page | eval

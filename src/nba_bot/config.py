@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -56,11 +57,22 @@ class Settings(BaseSettings):
     notify_imessage_to: str = ""
     bankroll: float = 0.0              # optional: shows stakes in dollars in the digest
 
+    # Ask runs Claude's SQL as its own login, `nba_ask`, which can only read the `ask`
+    # schema. Any random string; `nba-bot init-db` gives the login this password.
+    ask_db_password: str = ""
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
         return (
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def ask_database_url(self) -> str:
+        return (
+            f"postgresql+psycopg://nba_ask:{quote_plus(self.ask_db_password)}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

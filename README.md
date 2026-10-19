@@ -31,6 +31,12 @@ best bets, and scores itself against closing lines.
   of the same thing are consolidated and ranked by how firmly and widely they are
   sourced, then feed both models. The injury report only says who is out; the news
   says who is limited, starting, or resting.
+- **Answers questions** — type a question ("How did the Celtics do after the All-Star
+  break against top-10 teams?") and a Claude agent answers it by writing SQL. The SQL
+  runs as a separate database login that can only read a prepared `ask` schema:
+  read-only, five seconds per query, no access to bets or odds. An accuracy check of
+  30 questions with answers computed straight from the data (`nba-bot ask-eval`)
+  keeps it honest; every query behind an answer is saved for it.
 - **Researches its own errors** — a tool-using Claude agent looks for where the prop
   projections are systematically wrong. It explores on 2024-25 through fixed tools (no
   free-form code): bias with error bars clustered by player, and what a fix would do
@@ -123,6 +129,14 @@ nba-bot digest           # print the best-bets text (--results for last night, -
 nba-bot notify-test      # send a test text
 nba-bot costs            # what the Claude API has actually cost, by purpose and day
 ```
+
+### Ask
+```bash
+nba-bot ask "Who averaged the most assists in 2025-26?"
+nba-bot ask-eval                 # accuracy check: 30 questions, about a cent each
+```
+Needs `ASK_DB_PASSWORD` in `.env` and `nba-bot init-db`, which creates the read-only
+login. Questions from the dashboard are limited to this machine and $2 a day.
 
 ### Research agent
 ```bash

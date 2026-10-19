@@ -26,6 +26,7 @@ from nba_bot.db.models import (
     Odds,
     PlayerGameStats,
     Prediction,
+    AskQuestion,
     PropBet,
     ResearchFinding,
     ResearchRun,
@@ -750,3 +751,21 @@ def research(session: Session) -> dict:
         },
     }
 
+
+# --------------------------------------------------------------------------- #
+# Ask.
+# --------------------------------------------------------------------------- #
+def ask_record(a: AskQuestion) -> dict:
+    return {"id": a.id, "asked_at": _iso(a.asked_at), "question": a.question, "answer": a.answer,
+            "status": a.status, "cost_usd": _f(a.cost_usd)}
+
+
+def ask_limits(session: Session) -> dict:
+    """What today's questions from the page have spent against the daily cap."""
+    from nba_bot.ask import agent as ask_agent
+
+    today = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    spent = float(session.execute(
+        select(func.coalesce(func.sum(AskQuestion.cost_usd), 0))
+        .where(AskQuestion.asked_at >= today, AskQuestion.source == "page")).scalar_one())
+    return {"spent_today": round(spent, 2), "daily_cap": ask_agent.DAILY_CAP}

@@ -364,3 +364,15 @@ export type ResearchPayload = {
   ready: ResearchFinding[];
   held_back: { season: string; confirmations: number; next_z: number };
 };
+
+export type AskRecord = {
+  id: number;
+  asked_at: string;
+  question: string;
+  answer: string | null;
+  status: string;
+  cost_usd: number;
+};
+
+/** What today's questions have spent against the daily limit. */
+export type AskLimits = { spent_today: number; daily_cap: number };

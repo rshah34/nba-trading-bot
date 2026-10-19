@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/players", label: "Players", match: (p: string) => p.startsWith("/players") },
   { href: "/teams", label: "Teams", match: (p: string) => p.startsWith("/teams") },
   { href: "/news", label: "News", match: (p: string) => p.startsWith("/news") },
+  { href: "/ask", label: "Ask", match: (p: string) => p.startsWith("/ask") },
   { href: "/picks", label: "Picks", match: (p: string) => p.startsWith("/picks") },
   { href: "/research", label: "Research", match: (p: string) => p.startsWith("/research") },
 ];

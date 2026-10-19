@@ -4,10 +4,12 @@ from pathlib import Path
 
 import typer
 from rich import print as rprint
+from psycopg import sql
 from sqlalchemy import select
 
 from nba_bot import pipeline
 from nba_bot.agents import analysis_agent, data_agent, evaluation_agent
+from nba_bot.config import settings
 from nba_bot.db.engine import SessionLocal, engine
 from nba_bot.db.models import ResearchFinding
 
@@ -27,6 +29,14 @@ def init_db():
             for path in migrations:
                 cur.execute(path.read_text())
                 rprint(f"[green]applied[/green] {path.name}")
+            # Ask's read-only login gets its password here, from .env, so it is never in
+            # a committed file. Without one the login stays disabled and Ask can't run.
+            if settings.ask_db_password:
+                cur.execute(sql.SQL("ALTER ROLE nba_ask LOGIN PASSWORD {}").format(
+                    sql.Literal(settings.ask_db_password)))
+                rprint("[green]enabled[/green] the read-only nba_ask login")
+            else:
+                rprint("[yellow]ASK_DB_PASSWORD is not set; Ask stays off[/yellow]")
         raw.commit()
     finally:
         raw.close()
@@ -137,6 +147,40 @@ def backtest(
     for b in game_backtest.score(rows)["calibration"]:
         rprint(f"  {b['bin']}  n={b['n']:>4}  predicted={b['avg_predicted']}  "
                f"actual={b['actual_win_rate']}")
+
+
+@app.command()
+def ask(question: str = typer.Argument(..., help="A question about games or players.")):
+    """Ask a plain-English question; Claude answers it by querying the database."""
+    from nba_bot.ask import agent
+
+    with SessionLocal() as session:
+        reason = agent.why_not_ask(session, question)
+        if reason:
+            rprint(f"[red]{reason}[/red]")
+            raise typer.Exit(1)
+        record = agent.ask(session, question)
+        for q in record.queries:
+            status = q.get("error") or f"{q.get('row_count', 0)} rows"
+            rprint(f"  [dim]{q['purpose']} ({status})[/dim]")
+    rprint(f"\n{record.answer}")
+    rprint(f"[dim]{record.status}, {record.turns} turns, ${float(record.cost_usd):.3f}[/dim]")
+
+
+@app.command()
+def ask_eval(
+    limit: int = typer.Option(0, help="Run only the first N questions (0 = all)."),
+    budget: float = typer.Option(1.0, help="Stop once this many dollars are spent."),
+):
+    """Score Ask on questions whose answers are computed straight from the data."""
+    from nba_bot.ask import evaluation
+
+    cases = evaluation.CASES[:limit] if limit else evaluation.CASES
+    with SessionLocal() as session:
+        report = evaluation.run_eval(session, cases, budget=budget,
+                                     say=lambda line: rprint(f"  {line}"))
+    rprint(f"\n[bold]{report['passed']} of {report['total']} passed[/bold] "
+           f"(${report['cost_usd']:.2f}) — details in {report['path']}")
 
 
 @app.command()
