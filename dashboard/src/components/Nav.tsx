@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Search } from "./Search";
-import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Tonight", match: (p: string) => p === "/" || p.startsWith("/games") },
@@ -12,7 +11,6 @@ const LINKS = [
   { href: "/players", label: "Players", match: (p: string) => p.startsWith("/players") },
   { href: "/teams", label: "Teams", match: (p: string) => p.startsWith("/teams") },
   { href: "/news", label: "News", match: (p: string) => p.startsWith("/news") },
-  { href: "/ask", label: "Ask", match: (p: string) => p.startsWith("/ask") },
   { href: "/picks", label: "Picks", match: (p: string) => p.startsWith("/picks") },
   { href: "/research", label: "Research", match: (p: string) => p.startsWith("/research") },
 ];
@@ -45,7 +43,20 @@ export function Nav() {
         </nav>
         <div className="ml-auto flex flex-1 items-center justify-end gap-2">
           <Search />
-          <ThemeToggle />
+          <Link
+            href="/ask"
+            aria-current={pathname.startsWith("/ask") ? "page" : undefined}
+            className={`flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors ${
+              pathname.startsWith("/ask")
+                ? "bg-accent text-plane"
+                : "border border-accent/50 bg-accent/10 text-accent hover:bg-accent/20"
+            }`}
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+              <path d="M10 2c4.42 0 8 3.13 8 7s-3.58 7-8 7c-.9 0-1.77-.13-2.58-.37L3.5 17.5l1.1-3.3C3.02 12.95 2 11.07 2 9c0-3.87 3.58-7 8-7Zm-3.5 6a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm3.5 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm3.5 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z" />
+            </svg>
+            Ask
+          </Link>
         </div>
       </div>
     </header>

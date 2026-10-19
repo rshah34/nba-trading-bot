@@ -1,61 +1,25 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ *
- * Design tokens — validated data-viz reference palette (light + dark).
- * Dark values are declared under both the OS media query and the
- * [data-theme] scope so the in-app toggle wins in either direction.
+ * Design tokens — validated data-viz reference palette. The site is dark
+ * only; color-scheme makes scrollbars and form controls match.
  * ------------------------------------------------------------------ */
 :root {
-  --plane: #f9f9f7; /* page background */
-  --surface: #fcfcfb; /* cards / chart surface */
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --gridline: #e1e0d9;
-  --baseline: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
-  --series-1: #2a78d6; /* the highlighted series (blue) */
-  --series-rest: #c3c2b7; /* de-emphasized marks beside it */
-  --accent: #1c5fb5; /* interface accent: the current tab, links, section marks */
-  --good: #006300; /* positive delta */
-  --critical: #c4302f; /* negative delta */
-  --warning: #fab219; /* status: uncertain — always shown with a label */
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    --plane: #0d0d0d;
-    --surface: #1a1a19;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --gridline: #2c2c2a;
-    --baseline: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-    --series-1: #3987e5;
-    --series-rest: #4a4a46;
-    --accent: #7db4f5;
-    --good: #0ca30c;
-    --critical: #e05a59;
-    --warning: #fab219;
-  }
-}
-
-:root[data-theme="dark"] {
-  --plane: #0d0d0d;
-  --surface: #1a1a19;
+  color-scheme: dark;
+  --plane: #0d0d0d; /* page background */
+  --surface: #1a1a19; /* cards / chart surface */
   --text-primary: #ffffff;
   --text-secondary: #c3c2b7;
   --text-muted: #898781;
   --gridline: #2c2c2a;
   --baseline: #383835;
   --border: rgba(255, 255, 255, 0.1);
-  --series-1: #3987e5;
-  --series-rest: #4a4a46;
-  --accent: #7db4f5;
-  --good: #0ca30c;
-  --critical: #e05a59;
-  --warning: #fab219;
+  --series-1: #3987e5; /* the highlighted series (blue) */
+  --series-rest: #4a4a46; /* de-emphasized marks beside it */
+  --accent: #7db4f5; /* interface accent: the current tab, links, section marks */
+  --good: #0ca30c; /* positive delta */
+  --critical: #e05a59; /* negative delta */
+  --warning: #fab219; /* status: uncertain — always shown with a label */
 }
 
 @theme inline {
