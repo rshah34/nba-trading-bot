@@ -105,6 +105,7 @@ def predict(
 
 def _run_logged(name: str, fn) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     with SessionLocal() as session:
         result = fn(session)
     entry = pipeline.append_run_log(name, result)
