@@ -20,6 +20,7 @@ export default function PlayersPage() {
   const [window, setWindow] = useState<Window>("season");
   const [team, setTeam] = useState("");
   const [query, setQuery] = useState("");
+  const [qualifiedOnly, setQualifiedOnly] = useState(true);
 
   const teams = useMemo(
     () => [...new Set((data?.players ?? []).map((p) => p.team).filter(Boolean) as string[])].sort(),
@@ -29,10 +30,11 @@ export default function PlayersPage() {
     const q = query.trim().toLowerCase();
     return (data?.players ?? []).filter(
       (p) =>
+        (!qualifiedOnly || p.qualified) &&
         (!team || p.team === team) &&
         (!q || p.name.toLowerCase().includes(q)),
     );
-  }, [data, team, query]);
+  }, [data, team, query, qualifiedOnly]);
 
   if (!data) return <PageState loading={loading} error={error} />;
 
@@ -94,7 +96,19 @@ export default function PlayersPage() {
         {data.seasons.length > 1 && (
           <Select label="Season" value={data.season} onChange={setSeason} options={data.seasons.map((s) => ({ value: s, label: s }))} />
         )}
-        <span className="tnum ml-auto text-xs text-muted">
+        <label
+          className="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-secondary"
+          title="In at least 70% of his team's games, the NBA's rule for per-game leaders (58 of 82 over a season)"
+        >
+          <input
+            type="checkbox"
+            checked={qualifiedOnly}
+            onChange={(e) => setQualifiedOnly(e.target.checked)}
+            className="h-3.5 w-3.5 accent-[var(--accent)]"
+          />
+          Qualified only
+        </label>
+        <span className="tnum text-xs text-muted">
           {rows.length} players · {data.season}
         </span>
       </div>

@@ -422,20 +422,17 @@ def evaluate():
 
 
 @app.command()
-def backfill_box_scores(
-    season: str = typer.Option("2025-26", help="Season to fetch box scores for."),
-    limit: int = typer.Option(0, help="Max games this run (0 = all pending; resumable)."),
-    sleep: float = typer.Option(0.5, help="Seconds between nba.com calls (rate-limit courtesy)."),
-):
-    """Fetch player + team box scores for a loaded season's games that lack them.
-
-    Only needed when setting up a past season from scratch; the daily pipeline
-    keeps the current season filled in."""
+def load_season(season: str = typer.Option(..., help="A past season to load, e.g. 2023-24.")):
+    """Load a past season: regular season, play-in and playoffs, each its games and
+    then every box score (three nba.com requests per kind). Safe to rerun. The daily
+    pipeline keeps the current season filled in. Only the regular season feeds the
+    models; the rest is for Ask and the record pages."""
     from nba_bot.backtest import loader
 
     with SessionLocal() as session:
-        result = loader.backfill_box_scores(session, season, limit=limit or None, sleep=sleep)
-    rprint("[green]Box-score backfill:[/green]", result)
+        for kind in loader.SEASON_TYPES:
+            rprint(f"[green]{kind}:[/green]", loader.load_season(session, season, kind),
+                   loader.load_box_scores(session, season, kind))
 
 
 @app.command()
@@ -445,9 +442,14 @@ def serve(
     reload: bool = typer.Option(False, help="Auto-reload on code changes (dev only)."),
 ):
     """Serve the read-only JSON API (predictions, edges, backtest metrics)."""
+    from pathlib import Path
+
     import uvicorn
 
-    uvicorn.run("nba_bot.api.app:app", host=host, port=port, reload=reload)
+    # Watch the package itself, not wherever the command was started from.
+    source = str(Path(__file__).resolve().parents[1])
+    uvicorn.run("nba_bot.api.app:app", host=host, port=port, reload=reload,
+                reload_dirs=[source] if reload else None)
 
 
 if __name__ == "__main__":

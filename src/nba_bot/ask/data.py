@@ -13,7 +13,7 @@ from collections import defaultdict
 from sqlalchemy import column, delete, func, insert, select, table
 from sqlalchemy.orm import Session
 
-from nba_bot.data.nba_stats import is_preseason
+from nba_bot.data.nba_stats import is_preseason, is_regular_season
 from nba_bot.db.models import Game, Team
 from nba_bot.research.table import all_star_break
 
@@ -43,13 +43,14 @@ def _final_games(session: Session) -> list[Game]:
 
 def build_rows(games: list[Game], abbr: dict[int, str]) -> list[dict]:
     """The table's rows. Records and ranks count regular-season games only; ranks are
-    by point margin per game, 1 = best, among teams that have played."""
+    by point margin per game, 1 = best, among teams that have played. A playoff or
+    play-in game carries the teams' final regular-season record and rank."""
     rows = []
     by_season: dict[str, list[Game]] = defaultdict(list)
     for g in games:
         by_season[g.season].append(g)
     for season, season_games in by_season.items():
-        regular = [g for g in season_games if not is_preseason(g.game_id)]
+        regular = [g for g in season_games if is_regular_season(g.game_id)]
         brk = all_star_break([g.game_date for g in regular])
         wins: dict[int, int] = defaultdict(int)
         losses: dict[int, int] = defaultdict(int)
@@ -57,8 +58,8 @@ def build_rows(games: list[Game], abbr: dict[int, str]) -> list[dict]:
         ranks: dict[int, int] = {}
         ranked_on = None
         for g in season_games:
-            pre = is_preseason(g.game_id)
-            if not pre and g.game_date != ranked_on:
+            pre, reg = is_preseason(g.game_id), is_regular_season(g.game_id)
+            if reg and g.game_date != ranked_on:
                 played = [t for t in set(wins) | set(losses) if wins[t] + losses[t]]
                 order = sorted(played, key=lambda t: points[t] / (wins[t] + losses[t]), reverse=True)
                 ranks, ranked_on = {t: i + 1 for i, t in enumerate(order)}, g.game_date
@@ -73,7 +74,7 @@ def build_rows(games: list[Game], abbr: dict[int, str]) -> list[dict]:
                     "team_score": mine, "opp_score": theirs, "margin": mine - theirs,
                     "won": mine > theirs, "rest_days": rest,
                     "back_to_back": None if rest is None else rest == 0,
-                    "after_all_star_break": None if pre else (brk is not None and g.game_date >= brk),
+                    "after_all_star_break": (brk is not None and g.game_date >= brk) if reg else None,
                     "team_wins_before": None if pre else wins[team],
                     "team_losses_before": None if pre else losses[team],
                     "opp_wins_before": None if pre else wins[opp],
@@ -81,7 +82,7 @@ def build_rows(games: list[Game], abbr: dict[int, str]) -> list[dict]:
                     "team_rank_before": None if pre else ranks.get(team),
                     "opp_rank_before": None if pre else ranks.get(opp),
                 })
-            if not pre:
+            if reg:
                 home_won = g.home_score > g.away_score
                 for team, won, diff in ((g.home_team_id, home_won, g.home_score - g.away_score),
                                         (g.away_team_id, not home_won, g.away_score - g.home_score)):

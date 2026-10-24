@@ -72,6 +72,19 @@ def test_minutes_follow_a_recent_role_change_while_rate_stays_put():
     assert proj.mean("player_points") / proj.minutes == pytest.approx(0.5, rel=0.02)
 
 
+def test_a_new_season_starts_from_last_seasons_role_not_its_last_few_games():
+    # 60 games at 32 minutes, then a 5-game April shutdown at 18.
+    log = _log(60, minutes=32) + _log(5, minutes=18, start=date(2026, 4, 1))
+    assert project(log).minutes < 25                         # same season: the recent games
+    fresh = project(log, season="2026-27")
+    assert 29 < fresh.minutes < 31                           # next season: last season's average
+    # As this season's games come in, they take over.
+    new = [GameLine(game_id=f"n{i}", game_date=date(2026, 10, 21) + timedelta(days=2 * i),
+                    season="2026-27", team_id=1, opp_id=2, minutes=24.0, pts=15)
+           for i in range(12)]
+    assert project(log + new, season="2026-27").minutes == pytest.approx(24.0, abs=0.5)
+
+
 def test_opponent_factor_and_adjustment_scale_the_mean():
     base = project(_log(20)).mean("player_points")
     vs_soft = project(_log(20), opp_factors={"pts": 1.1}).mean("player_points")

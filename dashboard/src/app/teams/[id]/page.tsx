@@ -96,7 +96,7 @@ export default function TeamPage() {
                     <Link href={`/games/${g.game_id}`} className="flex items-baseline justify-between py-1.5 hover:underline">
                       <span className="text-secondary">
                         {shortDate(g.date)} {g.home ? "vs" : "at"} {g.opp}
-                        {g.preseason && <span className="ml-1 text-xs text-muted">pre</span>}
+                        {g.kind && <span className="ml-1 text-xs text-muted">{g.kind}</span>}
                       </span>
                       <span className="font-medium text-primary">{g.result}</span>
                     </Link>
@@ -117,7 +117,7 @@ export default function TeamPage() {
             <section>
               <SectionTitle>News</SectionTitle>
               <Card className="px-4 py-1">
-                <ReportList reports={team.reports} />
+                <ReportList reports={team.reports} details={false} />
               </Card>
             </section>
           )}

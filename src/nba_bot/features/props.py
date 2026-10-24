@@ -59,7 +59,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from nba_bot.data.nba_stats import is_preseason
+from nba_bot.data.nba_stats import is_regular_season
 from nba_bot.db.models import Game, PlayerGameStats, RosterSpot, TeamGameStats
 
 BASE_STATS = ("pts", "reb", "ast", "stl", "blk", "fg3m", "tov")
@@ -192,6 +192,10 @@ class Params:
     log_window: int = 120          # games of history considered
     phi_window: int = 40           # games used for the player's own variance/mean
     phi_prior_k: float = 15.0      # pseudo-games of the league φ prior
+    # A new season: last season's average minutes, weighted like this many games just
+    # before this season's first and fading with `hl_minutes` (backtested on three
+    # season starts: minutes error 4.7 -> 4.4 in each team's first 15 games).
+    season_prior: float = 2.0
 
 
 DEFAULT_PARAMS = Params()
@@ -368,14 +372,32 @@ def _phi(values: list[int], prior: float, prior_k: float) -> float:
     return max(1.0, (n * (var / m) + prior_k * prior) / (n + prior_k))
 
 
+def _minutes(log: list[GameLine], season: str | None, params: Params) -> float:
+    """Recency-weighted minutes. Across a season break his last few games say little
+    about next season's role (rest, tanking, a late injury, a changed roster), so last
+    season enters as its full average instead, and this season's games take over."""
+    wm = _weights(len(log), params.hl_minutes)
+    plain = sum(w * g.minutes for w, g in zip(wm, log)) / sum(wm)
+    earlier = [g for g in log if season is not None and g.season < season]
+    if not earlier or not params.season_prior:
+        return plain
+    last = [g.minutes for g in earlier if g.season == earlier[-1].season]
+    now = [g.minutes for g in log if g.season == season]
+    wc = _weights(len(now), params.hl_minutes)
+    prior = params.season_prior * 0.5 ** (len(now) / params.hl_minutes)
+    return (sum(w * m for w, m in zip(wc, now)) + prior * sum(last) / len(last)) / (sum(wc) + prior)
+
+
 def project(
     log: list[GameLine],
     *,
     opp_factors: dict[str, float] | None = None,
     adjustment: Adjustment | None = None,
     params: Params = DEFAULT_PARAMS,
+    season: str | None = None,
 ) -> Projection | None:
-    """Project one player's next game from his chronological log (prior games only)."""
+    """Project one player's next game in `season` from his chronological log (prior
+    games only). Without a season, the season break is ignored."""
     if len(log) < params.min_games:
         return None
     log = log[-params.log_window:]
@@ -383,14 +405,12 @@ def project(
     adj = adjustment or Adjustment()
     opp = opp_factors or {}
 
-    wm = _weights(n, params.hl_minutes)
-    minutes = sum(w * g.minutes for w, g in zip(wm, log)) / sum(wm)
+    minutes = _minutes(log, season, params)
 
     wr = _weights(n, params.hl_rate)
     weighted_min = sum(w * g.minutes for w, g in zip(wr, log))
     if weighted_min <= 0:
         return None
-
     means: dict[str, float] = {}
     for s in BASE_STATS:
         rate = sum(w * getattr(g, s) for w, g in zip(wr, log)) / weighted_min
@@ -546,8 +566,8 @@ def project_team(
     context: Context | None = None,
     use_budget: bool = True,
     budget_from: dict[int, list[GameLine]] | None = None,
-    fallback_minutes: dict[int, float] | None = None,
     params: Params = DEFAULT_PARAMS,
+    season: str | None = None,
 ) -> dict[int, Projection]:
     """Project every available player on one team, sharing one minutes budget and
     one stat budget.
@@ -560,11 +580,9 @@ def project_team(
     rotation" mode); by default it is the players being projected.
 
     A player too new to project still takes minutes from everyone else, so he counts
-    toward the budget at his short-sample average, or at `fallback_minutes` (e.g.
-    preseason) when he has no games at all. Leaving rookies out makes a rotation look
-    short-handed and inflates every teammate.
+    toward the budget at his short-sample average. Leaving rookies out makes a rotation
+    look short-handed and inflates every teammate. Preseason games never count.
     """
-    fallback_minutes = fallback_minutes or {}
     pre = dict(extra or {})
     if context is not None:
         for pid, log in logs.items():
@@ -578,7 +596,8 @@ def project_team(
     def first_pass(source: dict[int, list[GameLine]]) -> dict[int, Projection]:
         out = {}
         for pid, log in source.items():
-            proj = project(log, opp_factors=opp_factors, adjustment=pre.get(pid), params=params)
+            proj = project(log, opp_factors=opp_factors, adjustment=pre.get(pid), params=params,
+                           season=season)
             if proj is not None:
                 out[pid] = proj
         return out
@@ -590,7 +609,7 @@ def project_team(
     if use_budget:
         pool_minutes = [p.minutes for p in pool.values()]
         pool_minutes += [
-            _recent_average(log, "minutes") if log else fallback_minutes.get(pid, 0.0)
+            _recent_average(log, "minutes") if log else 0.0
             for pid, log in source.items() if pid not in pool
         ]
         ratio = budget_ratio(pool_minutes)
@@ -600,7 +619,7 @@ def project_team(
         # A player already held back doesn't also soak up spare minutes.
         capped = limited is not None and limited.minutes_mult < 1 and ratio > 1
         return project(
-            log, opp_factors=opp_factors, params=params,
+            log, opp_factors=opp_factors, params=params, season=season,
             adjustment=combine_adjustments(
                 limited,
                 None if capped else budget_adjustment(proj.minutes, ratio),
@@ -638,12 +657,9 @@ class PropsData:
     logs: dict[int, list[GameLine]]                 # player -> chronological real games played
     names: dict[int, str]
     current_team: dict[int, int]                    # team today; absent = on no roster
-    last_seen: dict[int, date]                      # latest appearance, preseason included
+    last_seen: dict[int, date]                      # latest appearance, preseason included (who is around, never stats)
     team_games: dict[int, list[GameInfo]]           # team -> chronological real games
     team_box: dict[tuple[str, int], dict[str, float]]  # (game, team) -> stat totals
-    # Average preseason minutes in the newest season: the only read on the role of a
-    # player with no regular-season history (rookies).
-    exhibition_minutes: dict[int, float] = field(default_factory=dict)
     _name_index: dict[str, list[int]] | None = field(default=None, repr=False)
 
     def name_index(self) -> dict[str, list[int]]:
@@ -760,7 +776,7 @@ def load_props_data(session: Session) -> PropsData:
 
     team_games: dict[int, list[GameInfo]] = defaultdict(list)
     for g in info.values():
-        if is_preseason(g.game_id):
+        if not is_regular_season(g.game_id):
             continue
         team_games[g.home_id].append(g)
         team_games[g.away_id].append(g)
@@ -774,8 +790,6 @@ def load_props_data(session: Session) -> PropsData:
     logs: dict[int, list[GameLine]] = defaultdict(list)
     names: dict[int, str] = {}
     latest: dict[int, tuple[date, int]] = {}
-    newest_season = max((g.season for g in info.values()), default="")
-    exhibition: dict[int, list[float]] = defaultdict(list)
     for r in session.execute(select(PlayerGameStats)).scalars():
         g = info.get(r.game_id)
         if g is None:
@@ -784,12 +798,11 @@ def load_props_data(session: Session) -> PropsData:
         minutes = float(r.minutes or 0)
         if minutes <= 0:
             continue
-        # Preseason minutes and usage are exhibition noise, so they never enter a log.
+        # Only the regular season enters a log: preseason is exhibition noise, and the
+        # playoffs are a different game (shorter rotations, the same opponent nightly).
         if r.player_id not in latest or g.game_date >= latest[r.player_id][0]:
             latest[r.player_id] = (g.game_date, r.team_id)
-        if is_preseason(r.game_id):
-            if g.season == newest_season:
-                exhibition[r.player_id].append(minutes)
+        if not is_regular_season(r.game_id):
             continue
         logs[r.player_id].append(
             GameLine(
@@ -815,5 +828,4 @@ def load_props_data(session: Session) -> PropsData:
         last_seen={pid: seen for pid, (seen, _team) in latest.items()},
         team_games=dict(team_games),
         team_box=team_box,
-        exhibition_minutes={pid: sum(m) / len(m) for pid, m in exhibition.items()},
     )

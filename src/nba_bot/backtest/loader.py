@@ -4,19 +4,18 @@ Everything here is reconstructable point-in-time from the schedule + final
 scores: game results, rest days / back-to-backs, and per-team margins (which
 feed `recent_form`). Injuries, news, and odds are NOT loaded — they aren't
 available historically, so a backtest measures the stats+rest signal only.
-One `get_season_games` call; no per-game box-score fetches.
+Three requests a season: the games, then every player's and team's box score.
 """
 
 from __future__ import annotations
 
-import time
 from datetime import date, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from nba_bot.agents.data_agent import store_box_score, sync_teams
+from nba_bot.agents.data_agent import sync_teams
 from nba_bot.data import nba_stats
 from nba_bot.db.models import Game, PlayerGameStats, TeamGameStats
 
@@ -27,11 +26,14 @@ def _as_date(value) -> date:
     return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
 
 
-def load_season(session: Session, season: str) -> dict:
-    """Populate games + team_game_stats for a season. Returns row counts."""
+SEASON_TYPES = ("Regular Season", "PlayIn", "Playoffs")
+
+
+def load_season(session: Session, season: str, season_type: str = "Regular Season") -> dict:
+    """Populate games + team_game_stats for one kind of game in a season."""
     sync_teams(session)  # ensure the 30 teams exist (static, no network)
 
-    paired = nba_stats.pair_games(nba_stats.get_season_games(season))
+    paired = nba_stats.pair_games(nba_stats.get_season_games(season, season_type))
     paired = paired.assign(_d=paired["game_date"].map(_as_date)).sort_values("_d")
 
     last_played: dict[int, date] = {}
@@ -92,46 +94,52 @@ def load_season(session: Session, season: str) -> dict:
                 stats_rows += 1
 
     session.commit()
-    return {"season": season, "games": games, "team_game_stat_rows": stats_rows}
+    return {"season": season, "type": season_type, "games": games,
+            "team_game_stat_rows": stats_rows}
 
 
-# After a failed fetch, wait this long before the next game; stop after this many in a row.
-_BACKOFF_SECONDS = 45
-_GIVE_UP_AFTER = 4
+def load_box_scores(session: Session, season: str, season_type: str = "Regular Season") -> dict:
+    """Player and team box scores for a loaded season, from two bulk requests.
 
+    Matches what the per-game box score stores, with one exception handled here: the
+    season log's team turnovers include team turnovers (shot-clock violations and the
+    like), so the team's count is summed from its players instead."""
+    players, teams = nba_stats.get_season_box_scores(season, season_type)
+    known = set(session.execute(select(Game.game_id).where(Game.season == season)).scalars())
+    players = players[players["GAME_ID"].isin(known)]
+    turnovers = players.groupby(["GAME_ID", "TEAM_ID"])["TOV"].sum()
 
-def backfill_box_scores(session: Session, season: str, limit: int | None = None,
-                        sleep: float = 0.5) -> dict:
-    """Fetch box scores for a season's final games that are missing them.
-
-    One V3 call per game fills both the player lines and the team raw counts, so
-    this is the single backfill for a freshly loaded season. Resumable: a game that
-    already has both is skipped. `sleep` is a courtesy pause between nba.com calls.
-    """
-    have_players = select(PlayerGameStats.game_id)
-    have_team_box = select(TeamGameStats.game_id).where(TeamGameStats.fga.is_not(None))
-    stmt = (
-        select(Game.game_id)
-        .where(
-            Game.season == season, Game.status == "final", Game.home_score.is_not(None),
-            or_(Game.game_id.not_in(have_players), Game.game_id.not_in(have_team_box)),
+    player_rows = 0
+    for r in players.itertuples(index=False):
+        minutes = round(float(r.MIN), 2)
+        if minutes <= 0:
+            continue
+        session.execute(
+            pg_insert(PlayerGameStats).values(
+                game_id=r.GAME_ID, player_id=int(r.PLAYER_ID), player_name=r.PLAYER_NAME,
+                team_id=int(r.TEAM_ID), minutes=minutes, points=int(r.PTS), rebounds=int(r.REB),
+                assists=int(r.AST), steals=int(r.STL), blocks=int(r.BLK), turnovers=int(r.TOV),
+                fgm=int(r.FGM), fga=int(r.FGA), fg3m=int(r.FG3M), fg3a=int(r.FG3A),
+                ftm=int(r.FTM), fta=int(r.FTA), plus_minus=float(r.PLUS_MINUS),
+            ).on_conflict_do_nothing(index_elements=[PlayerGameStats.game_id,
+                                                     PlayerGameStats.player_id])
         )
-        .order_by(Game.game_date)
-    )
-    if limit:
-        stmt = stmt.limit(limit)
-    pending = session.execute(stmt).scalars().all()
+        player_rows += 1
 
-    fetched = failed = streak = 0
-    for gid in pending:
-        try:
-            store_box_score(session, gid)
-            fetched, streak = fetched + 1, 0
-        except Exception:  # noqa: BLE001 — nba.com times out under load; the game stays pending
-            session.rollback()
-            failed, streak = failed + 1, streak + 1
-            if streak == _GIVE_UP_AFTER:
-                break  # it is refusing us; a later run picks up where this one stopped
-            time.sleep(_BACKOFF_SECONDS)
-        time.sleep(sleep)
-    return {"games_fetched": fetched, "failed": failed, "pending": len(pending) - fetched}
+    team_rows = 0
+    for r in teams[teams["GAME_ID"].isin(known)].itertuples(index=False):
+        box = {"fgm": int(r.FGM), "fga": int(r.FGA), "fg3m": int(r.FG3M), "fg3a": int(r.FG3A),
+               "ftm": int(r.FTM), "fta": int(r.FTA), "oreb": int(r.OREB), "dreb": int(r.DREB),
+               "rebounds": int(r.REB), "assists": int(r.AST), "steals": int(r.STL),
+               "blocks": int(r.BLK),
+               "turnovers": int(turnovers.get((r.GAME_ID, r.TEAM_ID), r.TOV)),
+               "fg_pct": r.FG_PCT, "fg3_pct": r.FG3_PCT, "ft_pct": r.FT_PCT}
+        session.execute(
+            pg_insert(TeamGameStats).values(game_id=r.GAME_ID, team_id=int(r.TEAM_ID), **box)
+            .on_conflict_do_update(index_elements=[TeamGameStats.game_id, TeamGameStats.team_id],
+                                   set_=box)
+        )
+        team_rows += 1
+    session.commit()
+    return {"season": season, "type": season_type, "player_rows": player_rows,
+            "team_rows": team_rows}

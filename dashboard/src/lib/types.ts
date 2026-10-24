@@ -164,6 +164,8 @@ export interface PlayerRow {
   season: Averages;
   l10: Averages;
   l5: Averages;
+  /** In at least 70% of his team's games: the NBA's rule for per-game leaders. */
+  qualified: boolean;
 }
 
 export interface Directory {
@@ -247,7 +249,8 @@ export interface TeamDetail extends TeamRow {
     l5: Averages | null;
     status: string | null;
   }[];
-  results: { game_id: string; date: string; home: boolean; opp: string; result: string; preseason: boolean }[];
+  /** `kind` tags a result that isn't regular season: "pre", "playoffs" or "play-in". */
+  results: { game_id: string; date: string; home: boolean; opp: string; result: string; kind: string | null }[];
   next: { game_id: string; date: string; home: boolean; opp: string } | null;
   injuries: Injury[];
   reports: Report[];

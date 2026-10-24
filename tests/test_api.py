@@ -130,3 +130,9 @@ def test_research_runs_start_only_from_this_machine():
 
     resp = TestClient(api.app).post("/research/runs", json={"budget": 1})
     assert resp.status_code == 403            # the test client is not localhost
+
+
+def test_qualified_follows_the_nbas_seventy_percent_rule():
+    assert views.qualified(58, 82) and not views.qualified(57, 82)
+    assert views.qualified(2, 2) and not views.qualified(1, 2)   # 70% of 2 rounds up to 2
+    assert not views.qualified(0, 0)

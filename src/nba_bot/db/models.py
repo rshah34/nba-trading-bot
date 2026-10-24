@@ -55,6 +55,8 @@ class Game(Base):
 # Preseason games (nba.com id prefix 001) are exhibition minutes. Every query that
 # reads games as evidence of team/player level filters on this.
 REAL_GAMES = Game.game_id.not_like("001%")
+# Records and standings count the regular season only.
+REGULAR_SEASON = Game.game_id.like("002%")
 # A game keeps status "scheduled" while it is being played, so "still to play"
 # needs the tip time as well.
 NOT_STARTED = or_(Game.tipoff_at.is_(None), Game.tipoff_at > func.now())

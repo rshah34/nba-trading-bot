@@ -245,6 +245,7 @@ def team_view(
     """`preseason` drops the game context: exhibition games are no one's debut or return,
     and their rest, venue and margin say nothing about a player's role."""
     game_date = slate.game_date
+    season = data_agent._season_for_date(game_date)
     window = game_date - _ROSTER_WINDOW
     # The roster is the league's list. Once the team has played a game that counts,
     # only those who have played one lately are projected, so a healthy scratch takes
@@ -306,7 +307,7 @@ def team_view(
 
     def project(source: dict[int, list[GameLine]]) -> dict[int, Projection]:
         projections = project_team(source, opp_factors=factors, extra=extra, context=context,
-                                   use_budget=settled, fallback_minutes=data.exhibition_minutes)
+                                   use_budget=settled, season=season)
         _name_absences(projections, missing)
         return projections
 

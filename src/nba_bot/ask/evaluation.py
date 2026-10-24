@@ -3,8 +3,8 @@
 Each case's expected answer is worked out when the check runs, so it stays right as
 new games arrive. An answer passes when it contains every expected item: a record
 ("64-18"), a number to one decimal, a name. An item can be a set of acceptable forms
-("Thunder" or "OKC"; "3" or "three"). Two questions ask for data that isn't there, and
-pass only if the answer says so instead of making something up.
+("Thunder" or "OKC"; "3" or "three"). One question asks for data that isn't there, and
+passes only if the answer says so instead of making something up.
 
 `nba-bot ask-eval` runs them (about a cent each) and saves the results to logs/.
 """
@@ -195,8 +195,12 @@ CASES: list[Case] = [
     Case("Who is listed as out for the Warriors on the latest injury report?", lambda: [
         tuple(r[0] for r in _rows("SELECT player FROM injuries WHERE team = 'GSW' "
                                   "AND status ILIKE 'out'"))]),
-    Case("What was the Celtics' playoff record in 2025-26?", lambda: [_NOT_THERE]),
-    Case("Who led the league in scoring in 2022-23?", lambda: [("2024-25", *_NOT_THERE)]),
+    Case("What was the Celtics' playoff record in 2024-25?",
+         lambda: _record(f"{P} AND season_type = 'playoffs'", "BOS")),
+    Case("Which team won the most playoff games in 2025-26?", lambda: _top_team(
+        f"SELECT team, sum(won::int) FROM team_games WHERE {S} AND season_type = 'playoffs' "
+        "GROUP BY 1 ORDER BY 2 DESC")),
+    Case("Who led the league in scoring in 2020-21?", lambda: [("2022-23", *_NOT_THERE)]),
 ]
 
 

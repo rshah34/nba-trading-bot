@@ -149,7 +149,7 @@ def build(data: PropsData, seasons: tuple[str, ...] = SEASONS) -> pd.DataFrame:
                       and _avg(data.log_before(p, gd), "minutes", 5) >= ROTATION_MIN]
             minutes_out = sum(_avg(data.log_before(p, gd), "minutes", 5) for p in absent)
             unbudgeted = project_team(tg.logs, opp_factors=tg.opp_factors, context=tg.context,
-                                      use_budget=False)
+                                      use_budget=False, season=tg.game.season)
             factors = tg.opp_factors or {}
 
             for pid, proj in tg.projections.items():

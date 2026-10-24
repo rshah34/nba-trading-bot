@@ -20,7 +20,7 @@ from nba_bot.features.games import GAME_MODEL
 from nba_bot.research import agent as research_agent
 from nba_bot.research import tools as research_tools
 from nba_bot.db.models import (
-    REAL_GAMES,
+    REGULAR_SEASON,
     Bet,
     Game,
     Odds,
@@ -98,10 +98,17 @@ def _seasons(data: PropsData) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Players.
 # --------------------------------------------------------------------------- #
+def qualified(games: int, team_games: int) -> bool:
+    """The NBA's rule for per-game leaders: in at least 70% of his team's games so
+    far (58 of 82 over a season). A traded player is measured by his latest team."""
+    return games > 0 and games >= math.ceil(0.7 * team_games)
+
+
 def players_index(session: Session, season: str | None) -> dict:
     data, teams = props_data(session), team_map(session)
     seasons = _seasons(data)
     season = season if season in seasons else (seasons[0] if seasons else "")
+    team_gp = {tid: sum(g.season == season for g in games) for tid, games in data.team_games.items()}
     rows = []
     for pid, log in data.logs.items():
         games = [g for g in log if g.season == season]
@@ -110,7 +117,8 @@ def players_index(session: Session, season: str | None) -> dict:
         team = teams.get(games[-1].team_id)  # who he played for that season, not where he is now
         rows.append({"id": pid, "name": data.names[pid], "team": team["abbr"] if team else None,
                      "team_id": team["id"] if team else None, "season": averages(games),
-                     "l10": averages(games, 10), "l5": averages(games, 5)})
+                     "l10": averages(games, 10), "l5": averages(games, 5),
+                     "qualified": qualified(len(games), team_gp.get(games[-1].team_id, 0))})
     rows.sort(key=lambda r: r["season"]["pts"], reverse=True)
     return {"season": season, "seasons": seasons, "players": rows}
 
@@ -323,6 +331,8 @@ def _pick_rows(session: Session, where, teams: dict[int, dict]) -> list[dict]:
 
 
 _PLAYOFFS = "004"
+# A short tag for a result that isn't a regular-season game.
+_KIND = {"001": "pre", "004": "playoffs", "005": "play-in"}
 
 
 def _standing(session: Session, game: Game, cache: dict) -> dict:
@@ -519,7 +529,8 @@ def game_detail(session: Session, game_id: str) -> dict | None:
                 opp_factors=factors.get(opp_id),
                 context=None if is_preseason(game.game_id) else game_context(
                     form, team_id, opp_id, team_id == game.home_team_id,
-                    game.game_date, factors.get(opp_id)))
+                    game.game_date, factors.get(opp_id)),
+                season=game.season)
             rows = [_player_row(pid, r.player_name, projections.get(pid), None, r)
                     for pid, r in played.items()]
             rows.sort(key=lambda r: r["actual"]["min"], reverse=True)
@@ -549,7 +560,7 @@ def _team_totals(session: Session, data: PropsData, season: str) -> dict[int, di
     """Per team for a season: record, points for/against, and what it produces and
     allows per game in each stat."""
     games = session.execute(
-        select(Game).where(Game.season == season, Game.status == "final", REAL_GAMES,
+        select(Game).where(Game.season == season, Game.status == "final", REGULAR_SEASON,
                            Game.home_score.is_not(None))
     ).scalars().all()
     blank = lambda: {"gp": 0, "w": 0, "pf": 0, "pa": 0,  # noqa: E731
@@ -631,7 +642,7 @@ def team_detail(session: Session, team_id: int) -> dict | None:
         results.append({"game_id": g.game_id, "date": g.game_date.isoformat(), "home": home,
                         "opp": teams[g.away_team_id if home else g.home_team_id]["abbr"],
                         "result": f"{'W' if mine > theirs else 'L'} {mine}-{theirs}",
-                        "preseason": is_preseason(g.game_id)})
+                        "kind": _KIND.get(g.game_id[:3])})
     return {
         **_team_summary(teams[team_id], _team_totals(session, data, season).get(team_id)),
         "season": season, "roster": roster, "results": results,

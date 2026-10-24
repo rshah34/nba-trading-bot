@@ -73,8 +73,11 @@ Rules:
 - season is a string like '2025-26'. season_type is 'regular', 'preseason', \
 'playoffs' or 'play-in'. Use the regular season unless the question says otherwise, \
 and say which season(s) you used.
-- Not in the data: seasons before 2024-25, playoff games, play-by-play, shot \
-locations, lineups, contracts. If the question needs them, say so plainly.
+- Playoff and play-in games are in both tables (season_type 'playoffs' / \
+'play-in'); their records and ranks are the final regular-season ones. Count a \
+series by grouping a team's playoff games against one opponent.
+- Not in the data: seasons before 2022-23, play-by-play, shot locations, lineups, \
+contracts. If the question needs them, say so plainly.
 - League leaders: per-game leaders need at least 70% of games played (58 of 82) \
 unless the question says otherwise; say so. A traded player's season is all his \
 teams together: group by player, not by player and team.

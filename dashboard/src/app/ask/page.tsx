@@ -153,7 +153,7 @@ export default function AskPage() {
           ))}
         </div>
         <p className="mt-2 text-xs text-muted">
-          Covers the 2024-25 and 2025-26 regular seasons, this season so far, schedules, the latest injury report
+          Covers the 2022-23 through 2025-26 regular seasons, this season so far, schedules, the latest injury report
           and recent news. No playoffs, play-by-play, shot charts or lineups.{" "}
           <span className="tnum">${num(data.spent_today, 2)} of ${num(data.daily_cap, 0)} used today.</span>
         </p>

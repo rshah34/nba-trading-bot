@@ -14,8 +14,10 @@ from nba_api.stats.endpoints import (
     boxscoretraditionalv3,
     commonallplayers,
     leaguegamefinder,
+    playergamelogs,
     scheduleleaguev2,
     scoreboardv3,
+    teamgamelogs,
 )
 from nba_api.stats.static import teams as static_teams
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -36,6 +38,13 @@ def is_preseason(game_id: str) -> bool:
     """Preseason games (id prefix 001) are exhibition minutes — never treat them
     as evidence about a team's or player's regular-season level."""
     return str(game_id).startswith(PRESEASON_PREFIX)
+
+
+def is_regular_season(game_id: str) -> bool:
+    """Regular-season games (prefix 002): the only games the models learn from.
+    Playoffs (004) and the play-in (005) are a different game, with shorter
+    rotations and repeated opponents; they are kept for Ask and the record pages."""
+    return str(game_id).startswith("002")
 
 
 def _parse_utc(value) -> datetime | None:
@@ -126,6 +135,19 @@ def get_season_games(season: str, season_type: str = "Regular Season") -> pd.Dat
         league_id_nullable="00",
     )
     return finder.get_data_frames()[0]
+
+
+@_retry
+def get_season_box_scores(season: str, season_type: str = "Regular Season",
+                          ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Every player's and every team's box score for one kind of game in a season
+    ("Regular Season", "PlayIn", "Playoffs"), in two requests (per-game fetches hit
+    nba.com's limit after about 600). Players who didn't play are left out. Minutes
+    are decimal, seconds included."""
+    kwargs = {"season_nullable": season, "season_type_nullable": season_type, "timeout": 60}
+    players = playergamelogs.PlayerGameLogs(**kwargs).get_data_frames()[0]
+    teams = teamgamelogs.TeamGameLogs(**kwargs).get_data_frames()[0]
+    return players, teams
 
 
 def pair_games(season_games: pd.DataFrame) -> pd.DataFrame:

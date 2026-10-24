@@ -31,9 +31,10 @@ interface Standing extends TeamRow {
   seed: number;
 }
 
-/** Best record first; point margin breaks a tie (the league's real tiebreakers need head-to-head results). */
+/** Best record first, then fewest games behind (2-0 is ahead of 1-0); point margin
+ * breaks a tie (the league's real tiebreakers need head-to-head results). */
 const byRecord = (a: TeamRow, b: TeamRow) =>
-  b.w / b.gp - a.w / a.gp || b.margin - a.margin;
+  b.w / b.gp - a.w / a.gp || b.w - b.l - (a.w - a.l) || b.margin - a.margin;
 
 function Seed({
   seed,

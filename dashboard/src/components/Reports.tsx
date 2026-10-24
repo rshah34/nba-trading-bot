@@ -16,12 +16,16 @@ const KIND_LABEL: Record<string, string> = {
 
 export const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
 
-/** Consolidated news reports, strongest first (the API's order). */
-export function ReportList({ reports, showPlayer = true, columns = false }: { reports: Report[]; showPlayer?: boolean; columns?: boolean }) {
+const meta = (r: Report) =>
+  `${r.sources > 1 ? `${r.sources} sources` : "1 source"} · ${pct(r.confidence)} sure${r.published_at ? ` · ${ago(r.published_at)}` : ""}`;
+
+/** Consolidated news reports, strongest first (the API's order). `details: false`
+ * moves the sources, confidence and age into a hover tooltip. */
+export function ReportList({ reports, showPlayer = true, columns = false, details = true }: { reports: Report[]; showPlayer?: boolean; columns?: boolean; details?: boolean }) {
   return (
     <ul className={columns ? "grid gap-x-8 md:grid-cols-2 [&>li]:border-b [&>li]:border-[var(--border)]" : "divide-y divide-[var(--border)]"}>
       {reports.map((r, i) => (
-        <li key={`${r.player}-${r.kind}-${i}`} className="py-2.5">
+        <li key={`${r.player}-${r.kind}-${i}`} className="py-2.5" title={details ? undefined : meta(r)}>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {showPlayer &&
               (r.player_id ? (
@@ -38,10 +42,7 @@ export function ReportList({ reports, showPlayer = true, columns = false }: { re
               </span>
             )}
             <StatusBadge status={kindLabel(r.kind)} />
-            <span className="tnum ml-auto text-xs text-muted">
-              {r.sources > 1 ? `${r.sources} sources` : "1 source"} · {pct(r.confidence)} sure
-              {r.published_at ? ` · ${ago(r.published_at)}` : ""}
-            </span>
+            {details && <span className="tnum ml-auto text-xs text-muted">{meta(r)}</span>}
           </div>
           <p className="mt-1 text-sm text-secondary">{r.summary}</p>
         </li>

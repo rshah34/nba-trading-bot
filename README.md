@@ -35,7 +35,7 @@ best bets, and scores itself against closing lines.
   break against top-10 teams?") and a Claude agent answers it by writing SQL. The SQL
   runs as a separate database login that can only read a prepared `ask` schema:
   read-only, five seconds per query, no access to bets or odds. An accuracy check of
-  30 questions with answers computed straight from the data (`nba-bot ask-eval`)
+  31 questions with answers computed straight from the data (`nba-bot ask-eval`)
   keeps it honest; every query behind an answer is saved for it.
 - **Researches its own errors** — a tool-using Claude agent looks for where the prop
   projections are systematically wrong. It explores on 2024-25 through fixed tools (no
@@ -173,7 +173,7 @@ reports, and the picks with their record. See [dashboard/README.md](dashboard/RE
 
 ### Backtesting
 ```bash
-# First time on a past season: load it, then fetch its box scores (one call per game).
-nba-bot backfill-box-scores --season 2025-26
+# First time on a past season: its games and every box score (three nba.com requests).
+nba-bot load-season --season 2023-24
 nba-bot backtest --season 2025-26        # the game-winner model, free
 ```

@@ -153,7 +153,7 @@ def replay(
                                    game.game_date, factors.get(opp_id))
             projections = project_team(
                 logs, opp_factors=factors.get(opp_id), params=params, context=context,
-                use_budget=availability != "none", budget_from=budget_from,
+                use_budget=availability != "none", budget_from=budget_from, season=season,
             )
             yield TeamGame(game, team_id, opp_id, context, factors.get(opp_id), logs,
                            {pid: data.logs[pid][idx] for pid, idx in tonight}, projections,
