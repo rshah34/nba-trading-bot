@@ -119,6 +119,7 @@ class RosterSpot(Base):
 
     player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.team_id"), nullable=False)
+    player_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Injury(Base):
@@ -314,6 +315,8 @@ class NewsSignal(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Only restates something already reported: it doesn't make the story new again.
+    restates: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

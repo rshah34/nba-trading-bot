@@ -271,7 +271,8 @@ def sync_rosters(session: Session) -> int:
     if rosters["team_id"].nunique() < len(known):
         raise ValueError(f"roster list covers {rosters['team_id'].nunique()} of {len(known)} teams")
     session.execute(delete(RosterSpot))
-    session.add_all(RosterSpot(player_id=int(r.player_id), team_id=int(r.team_id))
+    session.add_all(RosterSpot(player_id=int(r.player_id), team_id=int(r.team_id),
+                               player_name=r.player_name)
                     for r in rosters.itertuples())
     session.commit()
     return len(rosters)

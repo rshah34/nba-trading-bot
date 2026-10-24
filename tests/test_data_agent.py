@@ -48,7 +48,8 @@ class _FakeSession:
 
 
 def _rosters(monkeypatch, rows):
-    df = pd.DataFrame(rows, columns=["player_id", "team_id"])
+    df = pd.DataFrame([(pid, tid, f"Player {pid}") for pid, tid in rows],
+                      columns=["player_id", "team_id", "player_name"])
     monkeypatch.setattr(data_agent.nba_stats, "get_rosters", lambda season: df)
 
 
@@ -58,6 +59,7 @@ def test_sync_rosters_replaces_the_list(monkeypatch):
     assert data_agent.sync_rosters(session) == 2
     assert session.deleted and session.committed
     assert {(r.player_id, r.team_id) for r in session.added} == {(10, 1), (11, 2)}
+    assert {r.player_name for r in session.added} == {"Player 10", "Player 11"}
 
 
 def test_sync_rosters_refuses_a_partial_list(monkeypatch):

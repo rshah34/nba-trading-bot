@@ -102,3 +102,53 @@ def test_reports_are_ranked_by_firmness_and_how_widely_they_are_reported():
     assert reports[0].sources == 3 and reports[1].sources == 1
     # Speculation never makes the list.
     assert news_agent.consolidate([_sig("out", conf=0.3)]) == []
+
+
+def _story(*reports):
+    """Signals newest first, from (kind, hours_ago, restates)."""
+    out = []
+    for i, (kind, hours, restates) in enumerate(reports):
+        sig = _sig(kind, minutes=0 if kind == "out" else 1.0, conf=0.85, hours_ago=hours,
+                   article=500 + i)
+        sig.restates = restates
+        out.append(sig)
+    return out
+
+
+def _since(*reports):
+    report = news_agent.consolidate(_story(*reports))[0]
+    return (_BASE - report.since).total_seconds() / 3600   # hours ago
+
+
+def test_restating_a_known_injury_does_not_make_it_news_again():
+    # Out for the season 400 hours ago, mentioned in passing ever since.
+    assert _since(("out", 24, True), ("out", 96, True), ("out", 200, True),
+                  ("out", 400, False)) == 400
+
+
+def test_a_change_of_status_is_news():
+    # Day-to-day three days ago, ruled out today.
+    assert _since(("out", 5, False), ("questionable", 72, False)) == 5
+    # Even when the article ruling him out is mostly a restatement.
+    assert _since(("out", 5, True), ("questionable", 72, False)) == 5
+    # Out, back, out again: the re-injury is the story.
+    assert _since(("out", 3, False), ("returning", 50, False), ("out", 120, False)) == 3
+
+
+def test_a_new_ruling_or_setback_with_the_same_status_is_news():
+    # Out Friday, then ruled out again for Sunday's game.
+    assert _since(("out", 4, False), ("out", 50, False)) == 4
+    # Out two weeks, a restatement, then a setback.
+    assert _since(("out", 6, False), ("out", 100, True), ("out", 300, False)) == 6
+
+
+def test_players_are_matched_by_full_name_roster_name_or_a_surname_unique_on_his_team():
+    players = news_agent.Players(
+        by_name={"jusuf nurkic": {(1, 10), (1, 20)}, "santi aldama": {(2, 30)},
+                 "jayden quaintance": {(3, 40)},                       # roster only: a rookie
+                 "jalen williams": {(4, 50)}, "jaylin williams": {(5, 50)}},
+        official={1: "Jusuf Nurkić", 2: "Santi Aldama", 3: "Jayden Quaintance"})
+    assert news_agent.resolve_player(players, "Jayden Quaintance", 40) == 3
+    assert news_agent.resolve_player(players, "Nurkić", 20) == 1      # surname, unique on team
+    assert news_agent.resolve_player(players, "Aldama", None) is None  # no team to check against
+    assert news_agent.resolve_player(players, "Williams", 50) is None  # two on the team

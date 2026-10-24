@@ -120,7 +120,8 @@ def get_rosters(season: str) -> pd.DataFrame:
         is_only_current_season=1, season=season, league_id="00").get_data_frames()[0]
     df = df[df["TEAM_ID"].astype(int) != 0]
     return pd.DataFrame({"player_id": df["PERSON_ID"].astype(int),
-                         "team_id": df["TEAM_ID"].astype(int)})
+                         "team_id": df["TEAM_ID"].astype(int),
+                         "player_name": df["DISPLAY_FIRST_LAST"].astype(str)})
 
 
 @_retry

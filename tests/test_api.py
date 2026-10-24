@@ -136,3 +136,11 @@ def test_qualified_follows_the_nbas_seventy_percent_rule():
     assert views.qualified(58, 82) and not views.qualified(57, 82)
     assert views.qualified(2, 2) and not views.qualified(1, 2)   # 70% of 2 rounds up to 2
     assert not views.qualified(0, 0)
+
+
+def test_the_basketball_day_turns_over_at_six_eastern():
+    from datetime import datetime, timezone
+    late_game = datetime(2026, 10, 24, 4, 30, tzinfo=timezone.utc)    # 12:30 AM ET, 9:30 PM PT
+    assert views.league_today(late_game) == date(2026, 10, 23)
+    morning = datetime(2026, 10, 24, 10, 30, tzinfo=timezone.utc)     # 6:30 AM ET
+    assert views.league_today(morning) == date(2026, 10, 24)

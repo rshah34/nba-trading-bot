@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from nba_bot import usage
 from nba_bot.config import settings
 from nba_bot.data import news_feeds
-from nba_bot.db.models import Game, NewsArticle, NewsSignal, PlayerGameStats, Team
+from nba_bot.db.models import Game, NewsArticle, NewsSignal, PlayerGameStats, RosterSpot, Team
 from nba_bot.features.props import BASE_STATS, Adjustment, normalize_name
 
 log = logging.getLogger("nba_bot.news")
@@ -64,7 +64,8 @@ Kind = Literal["out", "doubtful", "questionable", "minutes_limit", "role_up", "r
 
 class Signal(BaseModel):
     article: int = Field(description="Number of the article this came from.")
-    player: str = Field(description="Player's full name as commonly written.")
+    player: str = Field(description="Player's full name, first and last, as commonly "
+                                    "written, even when the article uses only his surname.")
     team: str = Field(description="His NBA team's three-letter abbreviation, e.g. BOS. "
                                   "Empty string if the article doesn't make it clear.")
     kind: Kind
@@ -78,6 +79,11 @@ class Signal(BaseModel):
     )
     confidence: float = Field(description="0–1: how firmly the article supports this.")
     days_valid: int = Field(description="How many days this stays true, 1–10.")
+    new_development: bool = Field(
+        description="True if the article reports something new about this: a first report, "
+                    "a ruling for an upcoming game, a changed timeline, a setback, a return. "
+                    "False if it only restates a status already reported elsewhere (\"remains "
+                    "out\", \"still sidelined since the preseason\").")
     summary: str = Field(description="One sentence: what was reported and by whom.")
 
 
@@ -98,7 +104,10 @@ rotation, a trade or signing that changes who plays, a two-way or G League move.
 
 Not worth reporting: recaps of what a player already did, contract and salary news with no \
 effect on playing time, trade rumours that haven't happened, opinion, awards, anything about \
-a player's long-term outlook rather than the next week or so.
+a player's long-term outlook rather than the next week or so. Nor a player mentioned only \
+as background: an injury, trade or role the article treats as already known ("the Sixers, \
+who lost X to a torn Achilles in the preseason"). Report it only when the article itself \
+reports it, or something new about it: a timeline, a setback, a return.
 
 Be conservative. The multipliers adjust a projection built from his recent games, so only \
 depart from 1.0 when the article gives a specific reason, and scale confidence to the source: \
@@ -141,6 +150,63 @@ def sync_news(session: Session, feed_urls: tuple[str, ...] = news_feeds.NBA_RSS_
             new_articles += 1
     session.commit()
     return {"entries": len(entries), "new_articles": new_articles}
+
+
+@dataclass
+class Players:
+    """Every player a news item could be about: anyone with a box score, plus the
+    league's roster list (rookies and new signings who haven't played yet)."""
+
+    by_name: dict[str, set[tuple[int, int]]]    # normalized full name -> {(player, team)}
+    official: dict[int, str]                    # player -> the name to show
+
+
+def player_index(session: Session) -> Players:
+    by_name: dict[str, set[tuple[int, int]]] = defaultdict(set)
+    official: dict[int, str] = {}
+    for pid, name, team_id in session.execute(
+        select(PlayerGameStats.player_id, PlayerGameStats.player_name, PlayerGameStats.team_id)
+        .distinct()
+    ):
+        by_name[normalize_name(name)].add((pid, team_id))
+        official.setdefault(pid, name)
+    for pid, name, team_id in session.execute(
+        select(RosterSpot.player_id, RosterSpot.player_name, RosterSpot.team_id)
+    ):
+        if name:
+            by_name[normalize_name(name)].add((pid, team_id))
+            official[pid] = name
+    return Players(dict(by_name), official)
+
+
+def resolve_player(players: Players, name: str, team_id: int | None) -> int | None:
+    """The player a news item names, or None if it can't be told. A surname on its
+    own ("Nurkic") counts only when exactly one player on his team has it."""
+    key = normalize_name(name)
+    matches = players.by_name.get(key, set())
+    if not matches and key and " " not in key and team_id is not None:
+        matches = {(pid, t) for full, ids in players.by_name.items() if full.split()[-1] == key
+                   for pid, t in ids if t == team_id}
+    on_team = {pid for pid, t in matches if t == team_id}
+    ids = on_team or {pid for pid, _ in matches}
+    return next(iter(ids)) if len(ids) == 1 else None
+
+
+def link_players(session: Session, players: Players | None = None) -> int:
+    """Match still-unmatched current news to players, now that more may be known (a
+    rookie added to the roster list, a debut). Each gets his official name."""
+    players = players or player_index(session)
+    linked = 0
+    for sig in session.execute(
+        select(NewsSignal).where(NewsSignal.player_id.is_(None),
+                                 NewsSignal.expires_at > datetime.now(timezone.utc))
+    ).scalars():
+        pid = resolve_player(players, sig.player_name, sig.team_id)
+        if pid is not None:
+            sig.player_id, sig.player_name = pid, players.official.get(pid, sig.player_name)
+            linked += 1
+    session.commit()
+    return linked
 
 
 def _batches(articles: list[NewsArticle]) -> list[list[NewsArticle]]:
@@ -206,17 +272,13 @@ def extract_signals(
         .order_by(NewsArticle.published_at)
     ).scalars().all()
     articles = [a for a in recent if worth_reading(a, team_ids)]
+    players = player_index(session)
+    linked = link_players(session, players)
     if not articles:
-        return {"articles": 0, "signals": 0, "left_unread": len(recent)}
+        return {"articles": 0, "signals": 0, "left_unread": len(recent), "linked": linked}
 
     client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
     teams = {t.abbreviation.upper(): t.team_id for t in session.execute(select(Team)).scalars()}
-    players: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for pid, name, team_id in session.execute(
-        select(PlayerGameStats.player_id, PlayerGameStats.player_name, PlayerGameStats.team_id)
-        .distinct()
-    ):
-        players[normalize_name(name)].append((pid, team_id))
 
     stored = failed = 0
     for batch in _batches(articles):
@@ -240,17 +302,16 @@ def extract_signals(
                 continue
             article = batch[sig.article - 1]
             team_id = teams.get(sig.team.strip().upper())
-            matches = players.get(normalize_name(sig.player), [])
-            on_team = {pid for pid, t in matches if t == team_id}
-            ids = on_team or {pid for pid, _ in matches}
+            pid = resolve_player(players, sig.player, team_id)
             published = article.published_at or now
             session.add(NewsSignal(
-                article_id=article.id, team_id=team_id, player_name=sig.player,
-                player_id=next(iter(ids)) if len(ids) == 1 else None, kind=sig.kind,
+                article_id=article.id, team_id=team_id,
+                player_name=players.official.get(pid, sig.player) if pid else sig.player,
+                player_id=pid, kind=sig.kind,
                 minutes_mult=min(max(sig.minutes_mult, 0.0), 1.4),
                 usage_mult=min(max(sig.usage_mult, 0.85), 1.15),
                 confidence=min(max(sig.confidence, 0.0), 1.0), summary=sig.summary,
-                published_at=published,
+                published_at=published, restates=not sig.new_development,
                 expires_at=published + timedelta(days=min(max(sig.days_valid, 1), 10)),
                 model=model,
             ))
@@ -259,7 +320,7 @@ def extract_signals(
             a.signals_extracted_at = now
         session.commit()
     return {"articles": len(articles), "signals": stored, "failed_articles": failed,
-            "left_unread": len(recent) - len(articles)}
+            "left_unread": len(recent) - len(articles), "linked": linked}
 
 
 def active_signals(session: Session, as_of: datetime) -> dict[int, list[NewsSignal]]:
@@ -285,6 +346,7 @@ class Report:
 
     signal: NewsSignal      # the report to believe
     sources: int            # distinct articles that say the same
+    since: datetime | None = None   # its latest development; restatements don't make it new
 
     @property
     def weight(self) -> float:
@@ -317,17 +379,29 @@ def consolidate(signals: list) -> list[Report]:
         strongest = max(float(s.confidence) for s in group)
         chosen = next(s for s in group if float(s.confidence) >= strongest - _SUPERSEDE_MARGIN)
         agree = {s.article_id for s in group if s.kind == chosen.kind}
-        reports.append(Report(chosen, len(agree)))
+        reports.append(Report(chosen, len(agree), _latest_development(group, chosen)))
     reports.sort(key=lambda r: r.weight, reverse=True)
     return reports
+
+
+def _latest_development(group: list, chosen) -> datetime | None:
+    """When the story was last news: the newest report of it that wasn't a mere
+    restatement. A change of status ("questionable", then "out") is always news, so
+    the search stops where the status was different. `group` is newest first."""
+    run = group[group.index(chosen):]
+    for i, s in enumerate(run):
+        if s.kind != chosen.kind:
+            return run[i - 1].published_at       # the first report of the current status
+        if not getattr(s, "restates", False):
+            return s.published_at
+    return run[-1].published_at                  # only restatements: the oldest of them
 
 
 def team_news(session: Session, team_ids: list[int], as_of: datetime, limit: int = 8) -> list[Report]:
     """The reports that matter most for these teams as of a cutoff, strongest first.
 
-    This is what the game model reads as news: every article has already been mined
-    for signals, so the selection is by how firm and how widely reported something
-    is, not by which article happens to be newest.
+    Every article has already been mined for signals, so the selection is by how firm
+    and how widely reported something is, not by which article happens to be newest.
     """
     recent_players = (
         select(PlayerGameStats.player_id)

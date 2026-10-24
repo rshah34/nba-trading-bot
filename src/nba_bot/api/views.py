@@ -8,6 +8,7 @@ import math
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from statistics import NormalDist
 
 from sqlalchemy import func, or_, select
@@ -192,9 +193,10 @@ _NEWS_HALF_LIFE_DAYS = 2.0
 def _newest_and_firmest(reports: list[news_agent.Report], now: datetime,
                         limit: int | None = None) -> list[news_agent.Report]:
     """News in reading order: how firm and widely reported it is, discounted by age,
-    so this morning's solid report outranks last week's and a rumour stays below both."""
+    so this morning's solid report outranks last week's and a rumour stays below both.
+    Age counts from when the story broke, not from its latest repeat."""
     def score(r: news_agent.Report) -> float:
-        published = r.signal.published_at or r.signal.created_at
+        published = r.since or r.signal.published_at or r.signal.created_at
         age = max((now - published).total_seconds() / 86400, 0.0) if published else 0.0
         return r.weight * 0.5 ** (age / _NEWS_HALF_LIFE_DAYS)
 
@@ -206,7 +208,23 @@ def _report(r: news_agent.Report, teams: dict[int, dict]) -> dict:
     team = teams.get(s.team_id)
     return {"player": s.player_name, "player_id": s.player_id, "team": team["abbr"] if team else None,
             "kind": s.kind, "sources": r.sources, "confidence": float(s.confidence),
-            "summary": s.summary, "published_at": _iso(s.published_at)}
+            "summary": s.summary, "published_at": _iso(r.since or s.published_at)}
+
+
+def _team_reports(session: Session, team_ids: list[int], now: datetime, teams: dict[int, dict],
+                  limit: int | None = None) -> list[dict]:
+    """A news list for some teams. "Out" news about a player the official injury
+    report has out long-term is left off: the injury list already says so, with his
+    expected return, and articles keep mentioning him long after it stopped being
+    news. Anything else about him (cleared to practice, a return, a minutes limit)
+    is still news and stays."""
+    today = now.date()
+    gone = {normalize_name(i["player"]) for tid in team_ids
+            for i in data_agent.current_injuries(session, tid, now, today)
+            if i["return_date"] is not None and i["return_date"] - today > _LONG_TERM}
+    reports = [r for r in news_agent.team_news(session, team_ids, now, limit=200)
+               if r.signal.kind != "out" or normalize_name(r.signal.player_name) not in gone]
+    return [_report(r, teams) for r in _newest_and_firmest(reports, now, limit)]
 
 
 def player_detail(session: Session, player_id: int) -> dict | None:
@@ -214,7 +232,7 @@ def player_detail(session: Session, player_id: int) -> dict | None:
     if player_id not in data.names:
         return None
     log = data.logs.get(player_id, [])
-    now, today = datetime.now(timezone.utc), date.today()
+    now, today = datetime.now(timezone.utc), league_today()
 
     scores = {g.game_id: g for g in session.execute(
         select(Game).where(Game.game_id.in_([g.game_id for g in log]))).scalars()}
@@ -389,11 +407,22 @@ def _game_card(session: Session, game: Game, teams: dict[int, dict], cache: dict
     }
 
 
+# The basketball day: it turns over at 6 AM Eastern (3 AM Pacific), so a late West
+# Coast game stays on tonight's page until it's long over, on either coast and
+# whatever timezone this machine is set to.
+_LEAGUE_TZ = ZoneInfo("America/New_York")
+_DAY_STARTS = timedelta(hours=6)
+
+
+def league_today(now: datetime | None = None) -> date:
+    return ((now or datetime.now(timezone.utc)).astimezone(_LEAGUE_TZ) - _DAY_STARTS).date()
+
+
 def slate(session: Session, on: date | None) -> dict:
     teams = team_map(session)
     cache: dict = {}
     if on is None:
-        today = date.today()
+        today = league_today()
         on = (session.execute(select(func.min(Game.game_date)).where(Game.game_date >= today))
               .scalar_one_or_none()
               or session.execute(select(func.max(Game.game_date))).scalar_one_or_none() or today)
@@ -417,7 +446,7 @@ def slate_players(session: Session, on: date | None) -> dict:
     """Every projected player on one upcoming date: who is playing, for how long,
     and what he is projected for. One payload feeds the projections and fantasy pages."""
     data, teams = props_data(session), team_map(session)
-    now, today = datetime.now(timezone.utc), date.today()
+    now, today = datetime.now(timezone.utc), league_today()
     upcoming = Game.status == "scheduled", Game.game_date >= today
     dates = list(session.execute(
         select(Game.game_date).where(*upcoming).distinct().order_by(Game.game_date).limit(7)
@@ -543,8 +572,7 @@ def game_detail(session: Session, game_id: str) -> dict | None:
                     for pid, p in view.projections.items() if p.minutes >= 5]
             rows.sort(key=lambda r: r["proj"]["min"], reverse=True)
             out = _injury_rows(session, team_id, now, game.game_date)
-            reports = [_report(r, teams) for r in _newest_and_firmest(
-                news_agent.team_news(session, [team_id], now, limit=200), now, 8)]
+            reports = _team_reports(session, [team_id], now, teams, 8)
         sides.append({"team": teams[team_id], "players": rows, "injuries": out, "reports": reports})
 
     card = _game_card(session, game, teams, {})
@@ -607,7 +635,7 @@ def team_detail(session: Session, team_id: int) -> dict | None:
     data, teams = props_data(session), team_map(session)
     if team_id not in teams:
         return None
-    now, today = datetime.now(timezone.utc), date.today()
+    now, today = datetime.now(timezone.utc), league_today()
     seasons = _seasons(data)
     season = seasons[0] if seasons else ""
     newest = max(data.last_seen.values(), default=today)
@@ -651,8 +679,7 @@ def team_detail(session: Session, team_id: int) -> dict | None:
                          "opp": teams[nxt.away_team_id if nxt.home_team_id == team_id
                                       else nxt.home_team_id]["abbr"]},
         "injuries": injuries,
-        "reports": [_report(r, teams) for r in _newest_and_firmest(
-            news_agent.team_news(session, [team_id], now, limit=200), now, 12)],
+        "reports": _team_reports(session, [team_id], now, teams, 12),
     }
 
 
@@ -663,8 +690,7 @@ def news(session: Session, team_id: int | None) -> list[dict]:
     teams = team_map(session)
     ids = [team_id] if team_id else list(teams)
     now = datetime.now(timezone.utc)
-    reports = news_agent.team_news(session, ids, now, limit=200)
-    return [_report(r, teams) for r in _newest_and_firmest(reports, now)]
+    return _team_reports(session, ids, now, teams)
 
 
 def picks(session: Session) -> dict:
